@@ -274,17 +274,74 @@ class ReferenceBody {
         this.render();
     }
 
+    /** Ask for a code, then poll until someone approves it at /link.
+     *
+     *  The loop lives here rather than in a long-held server request: a poll
+     *  that waits server-side would tie up one of ComfyUI's workers for the
+     *  full ten minutes, and a canvas with three unsigned-in nodes would tie up
+     *  three. Stops on approval, expiry, or the panel being left. */
     async pair() {
+        this.pairCode = null;
+        this.pairExpires = null;
         this.render();
+        let deviceId;
         try {
             const res = await api.fetchApi("/framethrower/pair", { method: "POST" });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.error || `Pairing failed (${res.status})`);
             this.pairCode = data.code;
+            this.pairExpires = Date.parse(data.expiresAt) || Date.now() + 600000;
+            deviceId = data.deviceId;
+            // On a machine where the browser IS to hand, skip the retyping.
+            const url = `${data.verifyUrl || "https://framethrower.ai/link"}?code=${encodeURIComponent(data.code)}`;
+            window.open(url, "_blank", "noopener");
         } catch (e) {
             this.connError = e.message;
+            this.render();
+            return;
         }
-        this.render();
+
+        this.pairToken = (this.pairToken || 0) + 1;
+        const mine = this.pairToken;
+        const tick = async () => {
+            // A different pairing started, or the panel moved on. Stop.
+            if (mine !== this.pairToken || this.connStep !== "code") return;
+            if (Date.now() > this.pairExpires) {
+                this.connError = "That code expired. Try again.";
+                this.render();
+                return;
+            }
+            try {
+                const res = await api.fetchApi(`/framethrower/pair/poll?deviceId=${encodeURIComponent(deviceId)}`);
+                const data = await res.json().catch(() => ({}));
+                if (data.status === "approved") {
+                    this.connStep = null;
+                    this.connError = null;
+                    await this.checkStatus({ fresh: true });
+                    if (this.get("query")) this.search();
+                    return;
+                }
+                if (data.status === "expired") {
+                    this.connError = "That code expired. Try again.";
+                    this.render();
+                    return;
+                }
+            } catch {
+                // A dropped poll is not a failed pairing — keep waiting.
+            }
+            this.render();
+            setTimeout(tick, 3000);
+        };
+        setTimeout(tick, 3000);
+    }
+
+    /** Minutes and seconds left on the current code, or nothing if unknown. */
+    pairLeft() {
+        if (!this.pairExpires) return "";
+        const ms = this.pairExpires - Date.now();
+        if (ms <= 0) return "";
+        const m = Math.floor(ms / 60000), sec = Math.floor((ms % 60000) / 1000);
+        return ` expires in ${m}:${String(sec).padStart(2, "0")}`;
     }
 
     async signOut() {
@@ -442,7 +499,7 @@ class ReferenceBody {
             return `<div class="ft-conn">
         <p>Go to <b style="color:var(--ft-fg);font-weight:500">framethrower.ai/link</b> and enter</p>
         <div class="ft-code">${esc(this.pairCode || "————")}</div>
-        ${err || `<p style="font-size:9px;opacity:.8">Waiting for approval…</p>`}
+        ${err || `<p style="font-size:9px;opacity:.8">Waiting for approval…${this.pairLeft()}</p>`}
         <button class="ft-back" data-act="back">← back</button>
       </div>`;
         }
@@ -587,7 +644,7 @@ class ReferenceBody {
                 e.stopPropagation();
                 const act = btn.dataset.act;
                 if (act === "browser") {
-                    window.open(this.status_?.connectUrl || "https://framethrower.ai/settings?tab=api", "_blank", "noopener");
+                    window.open((this.status_?.connectUrl || "https://framethrower.ai/settings?tab=api") + "&for=comfyui", "_blank", "noopener");
                     // Straight to the paste step: the token is created in that
                     // tab, and the only thing left to do is bring it back.
                     this.connError = null; this.connStep = "paste"; this.render();

@@ -103,6 +103,61 @@ def search_by_image(image_url):
     return data.get("results") or []
 
 
+def _request_anon(url, payload=None, timeout=20):
+    """A call with no Authorization header — the pairing endpoints, which by
+    definition run before there is anything to authorise with."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+        headers={"Content-Type": "application/json", "User-Agent": "comfyui-framethrower"},
+        method="POST" if payload is not None else "GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:400]
+        try:
+            msg = json.loads(body).get("error") or body
+        except Exception:
+            msg = body
+        raise FrameThrowerError(msg) from exc
+    except urllib.error.URLError as exc:
+        raise FrameThrowerError(f"Could not reach FrameThrower: {exc.reason}") from exc
+
+
+def _post_anon(url, payload):
+    return _request_anon(url, payload)
+
+
+def _get_anon(url):
+    return _request_anon(url)
+
+
+def _save_token(token):
+    """Write a token into config.json, preserving everything else in it.
+
+    Returns True, or a string describing why not. Shared by the paste route and
+    the pairing route so there is exactly one place that writes a credential.
+    """
+    cfg = {}
+    if os.path.isfile(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except Exception:
+            cfg = {}
+    cfg["token"] = token
+    cfg.setdefault("base_url", DEFAULT_BASE)
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+        os.chmod(CONFIG_PATH, 0o600)   # a credential, not a settings file
+    except OSError as exc:
+        return f"Could not write config.json: {exc}"
+    return True
+
+
 def fetch_bytes(url, timeout=30):
     req = urllib.request.Request(url, headers={"User-Agent": "comfyui-framethrower"})
     with urllib.request.urlopen(req, timeout=timeout) as res:
@@ -139,17 +194,44 @@ try:
 
     @_routes.post("/framethrower/pair")
     async def _route_pair(request):
-        """Pairing-code sign-in.
+        """Ask framethrower.ai for a pairing code.
 
-        Not built yet: it needs a page on framethrower.ai where a signed-in
-        person enters the code, plus endpoints to mint and poll. Answering
-        honestly beats a button that spins forever — the other two routes work
-        today and the message says so.
+        Unauthenticated by nature — this is what runs when there are no
+        credentials yet. The code it returns is inert until a signed-in person
+        approves it at /link.
         """
-        return _web.json_response(
-            {"error": "Pairing codes aren't live yet. Use the browser route, or paste a token."},
-            status=501,
-        )
+        cfg = _load_config()
+        try:
+            data = _post_anon(f"{cfg['base_url']}/api/device/start", {"client": "comfyui"})
+        except FrameThrowerError as exc:
+            return _web.json_response({"error": str(exc)}, status=502)
+        return _web.json_response(data)
+
+    @_routes.get("/framethrower/pair/poll")
+    async def _route_pair_poll(request):
+        """One poll. The node drives the loop, so a hung request cannot wedge
+        ComfyUI's event loop the way a server-side wait would."""
+        device_id = request.query.get("deviceId", "")
+        if not device_id:
+            return _web.json_response({"error": "deviceId is required"}, status=400)
+        cfg = _load_config()
+        try:
+            data = _get_anon(f"{cfg['base_url']}/api/device/poll?deviceId={device_id}")
+        except FrameThrowerError as exc:
+            return _web.json_response({"error": str(exc)}, status=502)
+
+        # Approved: save the token here rather than handing it to the browser.
+        if data.get("status") == "approved" and data.get("token"):
+            if os.environ.get("FT_API_TOKEN"):
+                return _web.json_response(
+                    {"error": "FT_API_TOKEN is set in the environment and overrides anything saved here."},
+                    status=409,
+                )
+            saved = _save_token(data["token"])
+            if saved is not True:
+                return _web.json_response({"error": saved}, status=500)
+            return _web.json_response({"status": "approved"})
+        return _web.json_response({"status": data.get("status", "pending")})
 
     @_routes.delete("/framethrower/connect")
     async def _route_disconnect(request):
@@ -215,21 +297,9 @@ try:
         except FrameThrowerError as exc:
             return _web.json_response({"error": str(exc)}, status=401)
 
-        cfg = {}
-        if os.path.isfile(CONFIG_PATH):
-            try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
-                    cfg = json.load(fh)
-            except Exception:
-                cfg = {}
-        cfg["token"] = token
-        cfg.setdefault("base_url", DEFAULT_BASE)
-        try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-                json.dump(cfg, fh, indent=2)
-            os.chmod(CONFIG_PATH, 0o600)   # a credential, not a settings file
-        except OSError as exc:
-            return _web.json_response({"error": f"Could not write config.json: {exc}"}, status=500)
+        saved = _save_token(token)
+        if saved is not True:
+            return _web.json_response({"error": saved}, status=500)
         return _web.json_response({"ok": True})
 
 except Exception as exc:  # noqa: BLE001
