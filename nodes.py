@@ -141,7 +141,7 @@ class FrameThrowerReference:
     RETURN_NAMES = ("image", "prompt", "credit", "depth", "pose", "lineart")
     FUNCTION = "fetch"
     CATEGORY = "FrameThrower"
-    DESCRIPTION = "Search FrameThrower for a reference frame. Outputs the frame, its scene description, its credit line, and optional depth / pose / lineart."
+    DESCRIPTION = "FT / FrameThrower reference frames. Search the film-still library and output the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
 
     @classmethod
     def IS_CHANGED(cls, query, mode, index, depth, pose, lineart, pinned, query_in=None):
@@ -193,4 +193,7 @@ class FrameThrowerReference:
 
 
 NODE_CLASS_MAPPINGS = {"FrameThrowerReference": FrameThrowerReference}
-NODE_DISPLAY_NAME_MAPPINGS = {"FrameThrowerReference": "Reference Node (FrameThrower)"}
+# "FT" leads the name because that is what it gets called, and the node search
+# is a substring match — typing FT found nothing when this read
+# "Reference Node (FrameThrower)".
+NODE_DISPLAY_NAME_MAPPINGS = {"FrameThrowerReference": "FT Reference Node"}
