@@ -137,6 +137,44 @@ try:
         except Exception as exc:  # noqa: BLE001 - surface anything to the node UI
             return _web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 
+    @_routes.post("/framethrower/pair")
+    async def _route_pair(request):
+        """Pairing-code sign-in.
+
+        Not built yet: it needs a page on framethrower.ai where a signed-in
+        person enters the code, plus endpoints to mint and poll. Answering
+        honestly beats a button that spins forever — the other two routes work
+        today and the message says so.
+        """
+        return _web.json_response(
+            {"error": "Pairing codes aren't live yet. Use the browser route, or paste a token."},
+            status=501,
+        )
+
+    @_routes.delete("/framethrower/connect")
+    async def _route_disconnect(request):
+        """Forget the token. Leaves base_url and fal_key alone — signing out of
+        FrameThrower should not also wipe an unrelated fal key."""
+        if os.environ.get("FT_API_TOKEN"):
+            return _web.json_response(
+                {"error": "FT_API_TOKEN is set in the environment. Unset it to sign out."},
+                status=409,
+            )
+        cfg = {}
+        if os.path.isfile(CONFIG_PATH):
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                    cfg = json.load(fh)
+            except Exception:
+                cfg = {}
+        cfg["token"] = ""
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, indent=2)
+        except OSError as exc:
+            return _web.json_response({"error": f"Could not write config.json: {exc}"}, status=500)
+        return _web.json_response({"ok": True})
+
     @_routes.get("/framethrower/status")
     async def _route_status(request):
         cfg = _load_config()

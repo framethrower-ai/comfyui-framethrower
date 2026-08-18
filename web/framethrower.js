@@ -124,6 +124,15 @@ const CSS = `
 .ft-or { display:flex; align-items:center; gap:8px; width:100%; max-width:250px;
   font-size:8.5px; letter-spacing:.14em; color:var(--ft-dim); opacity:.6; }
 .ft-or::before, .ft-or::after { content:""; flex:1 1 auto; height:1px; background:var(--ft-line); }
+.ft-conn .ft-alt { padding:5px 12px; border:1px solid var(--ft-line); border-radius:3px;
+  background:transparent; color:var(--ft-fg); font:inherit; font-size:11px; cursor:pointer; }
+.ft-conn .ft-alt:hover { border-color:var(--ft-on); }
+.ft-back { border:none; background:transparent; color:var(--ft-dim); font:inherit;
+  font-size:9px; cursor:pointer; padding:0; }
+.ft-back:hover { color:var(--ft-fg); }
+.ft-code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:19px;
+  letter-spacing:.16em; color:var(--ft-fg); padding:5px 11px; border:1px solid var(--ft-line);
+  border-radius:4px; }
 .ft-paste { display:flex; gap:4px; width:100%; max-width:250px; }
 .ft-paste input { flex:1 1 auto; min-width:0; padding:4px 6px; border:1px solid var(--ft-line);
   border-radius:3px; background:transparent; color:var(--ft-fg); font:inherit; font-size:10px;
@@ -143,7 +152,8 @@ const CSS = `
   border:none; border-radius:3px; background:transparent; font:inherit; font-size:9.5px;
   cursor:default; color:var(--ft-dim); }
 .ft-link i { width:6px; height:6px; border-radius:50%; background:currentColor; }
-.ft-link.up { color:#3fb950; }
+.ft-link.up { color:#3fb950; cursor:pointer; }
+.ft-link.up:hover { background:rgba(63,185,80,.12); }
 .ft-link.down { color:#f85149; cursor:pointer; }
 .ft-link.down:hover { background:rgba(248,81,73,.12); }
 .ft-stat { min-width:0; font-size:9.5px; color:var(--ft-dim);
@@ -206,6 +216,8 @@ class ReferenceBody {
         this.debounce = null;
         this.status_ = null;      // null until /status answers; then {configured,…}
         this.connError = null;
+        this.connStep = null;   // null | "paste" | "code"
+        this.pairCode = null;
 
         this.root = document.createElement("div");
         this.root.className = "ft";
@@ -262,8 +274,37 @@ class ReferenceBody {
         this.render();
     }
 
+    async pair() {
+        this.render();
+        try {
+            const res = await api.fetchApi("/framethrower/pair", { method: "POST" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `Pairing failed (${res.status})`);
+            this.pairCode = data.code;
+        } catch (e) {
+            this.connError = e.message;
+        }
+        this.render();
+    }
+
+    async signOut() {
+        try {
+            const res = await api.fetchApi("/framethrower/connect", { method: "DELETE" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || "Could not sign out");
+            this.clear();
+            this.connStep = null;
+            await this.checkStatus({ fresh: true });
+        } catch (e) {
+            this.connError = e.message;
+            this.render();
+        }
+    }
+
     async connect(token) {
         this.connError = null;
+        this.connStep = null;   // null | "paste" | "code"
+        this.pairCode = null;
         try {
             const res = await api.fetchApi("/framethrower/connect", {
                 method: "POST",
@@ -272,6 +313,7 @@ class ReferenceBody {
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.error || `Could not save (${res.status})`);
+            this.connStep = null;
             await this.checkStatus({ fresh: true });
             if (this.get("query")) this.search();
         } catch (e) {
@@ -373,20 +415,45 @@ class ReferenceBody {
     }
 
     // ── view ─────────────────────────────────────────────────────────────────
-    /** Shown instead of results until the server has a token. Two doors: open
-     *  the tokens page, or paste one straight in. The paste field is not a
-     *  fallback — on a ComfyUI running anywhere but this machine, opening a
-     *  browser tab from the node is meaningless, and pasting is the only way. */
+    /** Shown instead of results until the server has a token.
+     *
+     *  Two doors, because they are not alternatives for the same person. The
+     *  browser route only works when the browser and ComfyUI are on one machine
+     *  — a redirect to 127.0.0.1:8188 means nothing from a laptop pointed at a
+     *  rented GPU — and that is a large share of ComfyUI. The pairing code works
+     *  everywhere. Neither is a fallback for the other. */
     connectPanel() {
+        const err = this.connError
+            ? `<p style="color:var(--error-text,#f87171)">${esc(this.connError)}</p>` : "";
+
+        if (this.connStep === "paste") {
+            return `<div class="ft-conn">
+        <p>Create a token on the page that just opened, then paste it here.</p>
+        <div class="ft-paste">
+          <input type="password" placeholder="ft_…" spellcheck="false" autofocus/>
+          <button data-act="save">Save</button>
+        </div>
+        ${err}
+        <button class="ft-back" data-act="back">← back</button>
+      </div>`;
+        }
+
+        if (this.connStep === "code") {
+            return `<div class="ft-conn">
+        <p>Go to <b style="color:var(--ft-fg);font-weight:500">framethrower.ai/link</b> and enter</p>
+        <div class="ft-code">${esc(this.pairCode || "————")}</div>
+        ${err || `<p style="font-size:9px;opacity:.8">Waiting for approval…</p>`}
+        <button class="ft-back" data-act="back">← back</button>
+      </div>`;
+        }
+
         return `<div class="ft-conn">
       <p>Sign in to FrameThrower to search the library.</p>
-      <button class="ft-go" data-act="open">Connect to account</button>
+      <button class="ft-go" data-act="browser">Sign in with browser</button>
       <span class="ft-or">OR</span>
-      <div class="ft-paste">
-        <input type="password" placeholder="or paste a token: ft_…" spellcheck="false"/>
-        <button data-act="save">Save</button>
-      </div>
-      ${this.connError ? `<p style="color:var(--error-text,#f87171)">${esc(this.connError)}</p>` : ""}
+      <button class="ft-alt" data-act="code">Use a pairing code</button>
+      <p style="font-size:9px;opacity:.75">Running ComfyUI on a remote GPU? Use the code.</p>
+      ${err}
     </div>`;
     }
 
@@ -451,7 +518,7 @@ class ReferenceBody {
         <span class="ft-left">
           ${this.status_
                 ? this.status_.configured
-                    ? `<span class="ft-link up"><i></i>Connected</span>`
+                    ? `<button class="ft-link up" data-act="signout" title="Sign out"><i></i>Connected</button>`
                     : `<button class="ft-link down" data-act="reconnect"><i></i>Not connected</button>`
                 : ""}
           <span class="ft-stat">${this.status()}</span>
@@ -519,11 +586,20 @@ class ReferenceBody {
             if (btn) {
                 e.stopPropagation();
                 const act = btn.dataset.act;
-                if (act === "open") {
+                if (act === "browser") {
                     window.open(this.status_?.connectUrl || "https://framethrower.ai/settings?tab=api", "_blank", "noopener");
+                    // Straight to the paste step: the token is created in that
+                    // tab, and the only thing left to do is bring it back.
+                    this.connError = null; this.connStep = "paste"; this.render();
+                } else if (act === "code") {
+                    this.connError = null; this.connStep = "code"; this.pair();
+                } else if (act === "back") {
+                    this.connError = null; this.connStep = null; this.render();
                 } else if (act === "save") {
                     const f = this.root.querySelector(".ft-paste input");
                     if (f) this.connect(f.value.trim());
+                } else if (act === "signout") {
+                    this.signOut();
                 } else if (act === "reconnect") {
                     this.clear();                       // put the panel back in view
                     this.checkStatus({ fresh: true });
