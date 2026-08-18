@@ -152,6 +152,33 @@ const FILTERS = [
     { key: "visual_style", label: "Style", values: ["live_action", "anime", "noir", "cg_stylized", "cg_photorealistic", "cartoon_2d", "stop_motion", "painterly", "documentary", "expressionist", "surreal", "minimalist", "watercolor", "rotoscope", "mixed_media"] },
 ];
 
+/**
+ * The hue bar, ported from the site's HueBarPicker.
+ *
+ * Saturation and lightness are held off full — 70/45, the values the site
+ * uses — so the swatches read filmic rather than neon, and because the frames
+ * being matched are photographed, not screen-printed. The gradient and the hex
+ * a click returns come from the same formula, so what you click is exactly
+ * what gets searched.
+ */
+const HUE_SAT = 70;
+const HUE_LIGHT = 45;
+
+function hslToHex(h, sPct = HUE_SAT, lPct = HUE_LIGHT) {
+    const a = (sPct / 100) * Math.min(lPct / 100, 1 - lPct / 100);
+    const f = (n) => {
+        const k = (n + h / 30) % 12;
+        const c = lPct / 100 - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+        return Math.round(255 * c).toString(16).padStart(2, "0");
+    };
+    return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+/** Nine stops is enough for a smooth ramp and keeps the CSS short. */
+const HUE_GRADIENT = [0, 45, 90, 135, 180, 225, 270, 315, 360]
+    .map((h) => `${hslToHex(h % 360)} ${(h / 360) * 100}%`)
+    .join(",");
+
 /** night → Night, golden_hour → Golden hour. */
 const pretty = (v) => v.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 
@@ -180,6 +207,16 @@ const CSS = `
   display:flex; flex-direction:column; height:100%; min-height:130px; overflow:hidden;
   color:var(--ft-fg); font-size:11px; font-weight:400;
   font-family:'Outfit FT','Outfit',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+
+/* the hue bar, above the field. Horizontal here rather than the site's
+   vertical bar: a node is wide and short, and the search box it belongs to
+   runs the same way. */
+.ft-hue { position:relative; flex:0 0 auto; height:12px; margin-bottom:5px; cursor:crosshair; }
+.ft-hue-bar { display:block; height:100%; border-radius:3px;
+  border:1px solid var(--ft-line); }
+.ft-hue-mark { position:absolute; top:-2px; width:8px; height:16px; margin-left:-4px;
+  border-radius:2px; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.6);
+  pointer-events:none; }
 
 /* one row: search box and the mode it searches in. The loading fill lives
    here rather than on a separate hairline — the thing you are waiting on is
@@ -325,6 +362,8 @@ const CSS = `
    rule is more specific, so without this, pointing at a switch that is on
    makes it look off. */
 .ft-acts button.ft-smart.on:hover, .ft-acts button.ft-funnel.on:hover { color:var(--ft-on); }
+.ft-chip { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:4px;
+  border:1px solid rgba(255,255,255,.35); flex:0 0 auto; }
 .ft-undo { display:inline-flex; vertical-align:-1px; margin-left:4px; padding:1px;
   border:none; border-radius:2px; background:transparent; color:var(--ft-dim);
   cursor:pointer; }
@@ -388,6 +427,8 @@ class ReferenceBody {
         this.mirrored = null;     // last text seen on the query_in wire
         this.filtersOpen = false;
         this.likeOf = null;      // the frame we are searching 'more like this' from
+        this.colorOf = null;     // the hex we are searching by, if any
+        this.hueOf = null;
         this.enhanced = null;    // the rewritten query, when smart search fired
         this.watch = null;
         this.connError = null;
@@ -763,6 +804,37 @@ class ReferenceBody {
         }
     }
 
+    /**
+     * Search by colour.
+     *
+     * Its own endpoint, not a filter on the text search — the colour histogram
+     * is a separate index, and there is no call that takes a mood and a hue
+     * together. So this replaces the results, like the eye does, and the words
+     * stay in the box to come back to.
+     */
+    async searchColor(hex, hue) {
+        this.colorOf = hex;
+        this.hueOf = hue;
+        this.likeOf = null;
+        this.loading = true;
+        this.error = null;
+        this.done = true;             // colour search returns one page
+        this.lastKey = `color::${hex}`;
+        this.tick(searchMs);
+        this.render();
+        try {
+            const data = await this.post({ color: hex, limit: PAGE_SIZE });
+            this.rows = data.results || [];
+        } catch (e) {
+            this.error = e.message;
+        } finally {
+            this.loading = false;
+            clearInterval(this.timer);
+            this.progress = 0;
+            this.render();
+        }
+    }
+
     /** Clicking the selected frame again deselects it — one click to undo a
      *  mis-click, rather than hunting for a button. */
     pick(row) {
@@ -873,6 +945,9 @@ class ReferenceBody {
         if (this.likeOf) {
             return `Like <b>${esc(this.likeOf.filmTitle || "that frame")}</b>${undo("unlike", "Back to the text search")}`;
         }
+        if (this.colorOf) {
+            return `<span class="ft-chip" style="background:${esc(this.colorOf)}"></span><b>${esc(this.colorOf)}</b> · ${this.rows.length} frames${undo("uncolor", "Back to the text search")}`;
+        }
         // The rewrite is reported by the button that controls it, not here. As
         // text in this line it collided with the count — .ft-stat is a nowrap
         // flex row, so an inline span appearing after a search had nowhere to
@@ -897,6 +972,10 @@ class ReferenceBody {
         </label>`).join("")}
         ${this.filterCount ? `<button class="ft-clearf" data-act="clearfilters">Clear ${this.filterCount}</button>` : ""}
       </div>` : ""}
+      <div class="ft-hue" title="Click a colour to find frames dominated by it">
+        <i class="ft-hue-bar" style="background:linear-gradient(90deg,${HUE_GRADIENT})"></i>
+        ${this.colorOf ? `<i class="ft-hue-mark" style="left:${(this.hueOf ?? 0) / 360 * 100}%;background:${esc(this.colorOf)}"></i>` : ""}
+      </div>
       <div class="ft-search">
         <i class="ft-load" style="width:${this.progress}%"></i>
         ${ICON.search}
@@ -992,6 +1071,14 @@ class ReferenceBody {
         };
         this.root.ondragend = () => { dragging = null; };
 
+        const hue = this.root.querySelector(".ft-hue");
+        if (hue) hue.onclick = (e) => {
+            e.stopPropagation();
+            const box = hue.getBoundingClientRect();
+            const h = Math.max(0, Math.min(359, Math.round(((e.clientX - box.left) / box.width) * 360)));
+            this.searchColor(hslToHex(h), h);
+        };
+
         this.root.onclick = (e) => {
             const btn = e.target.closest("[data-act]");
             if (btn) {
@@ -1005,6 +1092,11 @@ class ReferenceBody {
                     this.pinnedId = null;
                     this.set("pinned", "");
                     this.render();
+                } else if (act === "uncolor") {
+                    this.colorOf = null;
+                    this.hueOf = null;
+                    this.lastKey = "";
+                    this.search();
                 } else if (act === "unlike") {
                     this.likeOf = null;
                     this.lastKey = "";

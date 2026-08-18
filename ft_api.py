@@ -165,6 +165,22 @@ def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, enhanc
     return rows
 
 
+def search_color(hex_color, limit=MAX_LIMIT):
+    """Frames dominated by a colour.
+
+    A different endpoint from text search, not a filter on it — the colour
+    histogram is its own index, and there is no way to ask for "this mood, in
+    teal" in one call.
+    """
+    if not hex_color:
+        return []
+    data = _post(
+        "/api/v1/search/color",
+        {"color": hex_color, "limit": min(int(limit), MAX_LIMIT)},
+    )
+    return [_row(r) for r in (data.get("data") or [])]
+
+
 def search_by_image(image_url):
     """Visually similar frames."""
     if not image_url:
@@ -247,6 +263,11 @@ try:
     async def _route_search(request):
         try:
             body = await request.json()
+            if body.get("color"):
+                return _web.json_response({
+                    "results": search_color(body["color"], int(body.get("limit", MAX_LIMIT))),
+                    "exhausted": True,
+                })
             if body.get("imageUrl"):
                 results = search_by_image(body["imageUrl"])
                 return _web.json_response({"results": results, "exhausted": True})
