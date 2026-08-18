@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy to config.json and fill in. config.json is gitignored. Environment variables FT_API_TOKEN / FT_API_URL / FAL_KEY override anything here.",
+  "base_url": "https://framethrower.ai",
+  "token": "ft_your_token_here",
+  "fal_key": ""
+}
