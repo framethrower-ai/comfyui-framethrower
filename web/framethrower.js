@@ -34,13 +34,13 @@ const MODES = [
     { key: "description", label: "Text" },
 ];
 
-/** Sits in the top row, in socket order, so each toggle lines up with the
- *  output it feeds. Icons rather than words because three words plus a search
- *  box do not fit across a node this narrow. */
+/** In socket order, so each switch reads across to the output it feeds.
+ *  Labelled, not iconographic: a stack, a stick figure and a pencil do not say
+ *  "depth map, pose, lineart" to anyone who does not already know. */
 const PROCESSORS = [
-    { key: "depth", label: "Depth map" },
-    { key: "pose", label: "DW pose" },
-    { key: "lineart", label: "Lineart" },
+    { key: "depth", label: "Depth", hint: "Depth map (Depth Anything v2) — one fal call per frame" },
+    { key: "pose", label: "Pose", hint: "DW pose skeleton — one fal call per frame" },
+    { key: "lineart", label: "Lineart", hint: "Lineart — one fal call per frame" },
 ];
 
 const CSS = `
@@ -62,13 +62,19 @@ const CSS = `
 .ft-cog:hover { background:rgba(255,255,255,.1); color:#fff; }
 .ft-cog.on { background:rgba(232,84,47,.16); color:var(--ft-accent); }
 /* the three map toggles, in output-socket order */
-.ft-maps { flex:0 0 auto; display:flex; gap:1px; padding-right:2px; margin-right:2px;
-  border-right:1px solid var(--ft-line); }
-.ft-map { display:flex; padding:3px; border:none; border-radius:4px; background:transparent;
-  color:rgba(255,255,255,.28); cursor:pointer; }
-.ft-map svg { width:12px; height:12px; }
-.ft-map:hover { background:rgba(255,255,255,.1); color:#fff; }
-.ft-map.on { color:var(--ft-accent); background:rgba(232,84,47,.14); }
+.ft-maps { flex:0 0 auto; display:flex; gap:2px; padding:4px 6px;
+  border-bottom:1px solid var(--ft-line); }
+.ft-map { flex:1 1 0; display:flex; align-items:center; justify-content:center; gap:5px;
+  padding:3px 4px; border:none; border-radius:4px; background:transparent;
+  color:rgba(255,255,255,.32); font:inherit; font-size:10px; cursor:pointer; }
+.ft-map:hover { background:rgba(255,255,255,.06); color:rgba(255,255,255,.7); }
+.ft-map.on { color:#fff; }
+.ft-sw { position:relative; flex:0 0 auto; width:20px; height:11px; border-radius:6px;
+  background:rgba(255,255,255,.16); transition:background .15s; }
+.ft-sw::after { content:""; position:absolute; top:2px; left:2px; width:7px; height:7px;
+  border-radius:50%; background:#fff; transition:left .15s; }
+.ft-map.on .ft-sw { background:var(--ft-accent); }
+.ft-map.on .ft-sw::after { left:11px; }
 
 /* settings drawer */
 .ft-set { flex:0 0 auto; display:flex; flex-direction:column; gap:6px; padding:7px;
@@ -144,9 +150,6 @@ const SVG = (d, extra = "") =>
 const ICON = {
     search: SVG('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'),
     cog: SVG('<circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>'),
-    depth: SVG('<path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>'),
-    pose: SVG('<circle cx="12" cy="4" r="2"/><path d="M12 6v6M6 9h12M12 12l-3 8M12 12l3 8"/>'),
-    lineart: SVG('<path d="M12 19l7-7 3 3-7 7-3-3Z"/><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5Z"/><path d="m2 2 7.6 7.6"/><circle cx="11" cy="11" r="2"/>'),
     refresh: SVG('<path d="M21 12a9 9 0 0 0-9-9 9.8 9.8 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.8 9.8 0 0 0 6.7-2.7L21 16"/><path d="M16 16h5v5"/>'),
     x: SVG('<path d="M18 6 6 18M6 6l12 12"/>'),
 };
@@ -386,12 +389,12 @@ class ReferenceBody {
         <input type="text" spellcheck="false"
                placeholder="${this.driven ? "driven by query_in" : "neon rain at night"}"
                value="${esc(this.get("query") || "")}" ${this.driven ? "disabled" : ""}/>
-        <span class="ft-maps">${PROCESSORS.map(
-        (p) => `<button class="ft-map${this.get(p.key) ? " on" : ""}" data-proc="${p.key}"
-                  title="${p.label} — costs one fal call per frame">${ICON[p.key]}</button>`
-    ).join("")}</span>
         <button class="ft-cog${this.settingsOpen ? " on" : ""}" data-act="cog" title="Search mode and index">${ICON.cog}</button>
       </div>
+      <div class="ft-maps">${PROCESSORS.map(
+        (p) => `<button class="ft-map${this.get(p.key) ? " on" : ""}" data-proc="${p.key}"
+                  title="${p.hint}"><span class="ft-sw"></span>${p.label}</button>`
+    ).join("")}</div>
       ${this.settings()}
       <div class="ft-bar"><i style="width:${this.progress}%"></i></div>
       <div class="ft-scroll">${this.body()}</div>
