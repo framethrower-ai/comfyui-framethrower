@@ -420,11 +420,15 @@ class ReferenceBody {
     status() {
         if (this.error) return "Error";
         if (this.loading) return "Searching…";
-        if (this.pinnedId) {
-            const r = this.rows.find((x) => x.id === this.pinnedId);
-            return r ? `<b>${esc(r.filmTitle || "Frame")}</b>${r.year ? ` · ${r.year}` : ""}` : "1 selected";
+        // No film title here. The selected cell is already outlined in the grid
+        // and captioned on hover, so repeating it in the footer said nothing
+        // twice and pushed the connection state around as titles changed length.
+        if (this.rows.length) {
+            return this.pinnedId
+                ? `${this.rows.length} frames · 1 selected`
+                : `${this.rows.length} frames · click one to use it`;
         }
-        if (this.rows.length) return `${this.rows.length} frames · click one to use it`;
+        if (this.pinnedId) return "1 selected";
         return this.driven ? "query_in" : "";
     }
 
