@@ -179,6 +179,25 @@ class FrameThrowerReference:
 
     RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE", "IMAGE", "IMAGE")
     RETURN_NAMES = ("image", "prompt", "credit", "depth", "pose", "lineart")
+    # Shown when you hover a socket, and — more usefully — the thing that tells
+    # you what to plug each one into before you have plugged anything in.
+    OUTPUT_TOOLTIPS = (
+        "The frame itself. Into Preview Image, Save Image, or a VAE Encode / "
+        "ControlNet / IPAdapter that takes an IMAGE.",
+        "The frame's scene description, as text. Into CLIP Text Encode.",
+        "Title, year and director, as text. Into a text overlay or Save Text, "
+        "so the attribution travels with whatever you make.",
+        "Depth map. Into a depth ControlNet. Runs only while this socket is wired.",
+        "DW pose skeleton. Into a pose ControlNet. Runs only while this socket is wired.",
+        "Lineart. Into a lineart ControlNet. Runs only while this socket is wired.",
+    )
+    # "FT" no longer appears in the display name, so it has to be searchable
+    # some other way — this is the field the node search actually reads.
+    SEARCH_ALIASES = [
+        "ft", "framethrower", "reference", "reference node", "film still",
+        "movie still", "film frame", "screencap", "cinematography", "moodboard",
+        "shot reference", "stills library",
+    ]
     FUNCTION = "fetch"
     CATEGORY = "FrameThrower"
     DESCRIPTION = "FT / FrameThrower reference frames. Search the film-still library and output the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
