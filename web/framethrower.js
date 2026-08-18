@@ -54,9 +54,9 @@ const CSS = `
   color:var(--ft-fg); font:inherit; font-size:11.5px; padding:2px 0; }
 .ft-search input::placeholder { color:var(--ft-dim); opacity:.6; }
 .ft-search input:disabled { color:var(--ft-dim); font-style:italic; }
-.ft-mode { flex:0 0 auto; padding:2px 4px; border:1px solid var(--ft-line); border-radius:3px;
-  background:transparent; color:var(--ft-dim); font:inherit; font-size:10px;
-  outline:none; cursor:pointer; }
+.ft-mode { flex:0 0 auto; padding:2px 2px; border:none; background:transparent;
+  color:var(--ft-dim); font:inherit; font-size:10px; outline:none; cursor:pointer;
+  -webkit-appearance:none; appearance:none; text-align:right; }
 .ft-mode:hover { color:var(--ft-fg); }
 .ft-mode option { background:var(--comfy-menu-bg,#252525); color:var(--ft-fg); }
 
@@ -113,6 +113,16 @@ const CSS = `
 /* one row: what is selected, and what you can do about it */
 .ft-foot { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
   gap:6px; padding-top:4px; }
+.ft-left { display:flex; align-items:center; gap:6px; min-width:0; }
+/* Connection state, bottom left. A dot and a word: you should be able to tell
+   whether this node can reach your account without clicking anything. */
+.ft-link { display:flex; align-items:center; gap:4px; flex:0 0 auto; padding:2px 5px;
+  border:none; border-radius:3px; background:transparent; font:inherit; font-size:9.5px;
+  cursor:default; color:var(--ft-dim); }
+.ft-link i { width:6px; height:6px; border-radius:50%; background:currentColor; }
+.ft-link.up { color:#3fb950; }
+.ft-link.down { color:#f85149; cursor:pointer; }
+.ft-link.down:hover { background:rgba(248,81,73,.12); }
 .ft-stat { min-width:0; font-size:9.5px; color:var(--ft-dim);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .ft-stat b { color:var(--ft-fg); font-weight:500; }
@@ -408,7 +418,14 @@ class ReferenceBody {
       ${this.progress > 0 ? `<div class="ft-bar"><i style="width:${this.progress}%"></i></div>` : ""}
       <div class="ft-scroll">${this.body()}</div>
       <div class="ft-foot">
-        <span class="ft-stat">${this.status()}</span>
+        <span class="ft-left">
+          ${this.status_
+                ? this.status_.configured
+                    ? `<span class="ft-link up"><i></i>Connected</span>`
+                    : `<button class="ft-link down" data-act="reconnect"><i></i>Not connected</button>`
+                : ""}
+          <span class="ft-stat">${this.status()}</span>
+        </span>
         <span class="ft-acts">
           <select class="ft-mode" title="How the library is searched">
             ${MODES.map((m) => `<option value="${m.key}"${m.key === mode ? " selected" : ""}>${m.label}</option>`).join("")}
@@ -477,6 +494,9 @@ class ReferenceBody {
                 } else if (act === "save") {
                     const f = this.root.querySelector(".ft-paste input");
                     if (f) this.connect(f.value.trim());
+                } else if (act === "reconnect") {
+                    this.clear();                       // put the panel back in view
+                    this.checkStatus({ fresh: true });
                 } else if (act === "refresh") {
                     // Also the way back from a connect that failed.
                     if (!this.status_?.configured) this.checkStatus({ fresh: true });
