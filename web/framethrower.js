@@ -306,12 +306,10 @@ const CSS = `
 .ft-stat { display:flex; align-items:center; min-width:0; font-size:9.5px;
   color:var(--ft-dim); white-space:nowrap; }
 .ft-stat b { color:var(--ft-fg); font-weight:500; overflow:hidden; text-overflow:ellipsis; }
-.ft-via { color:var(--ft-on); cursor:help; border-bottom:1px dotted currentColor; }
-.ft-smart { flex:0 0 auto; padding:1px 5px; border:1px solid var(--ft-line); border-radius:3px;
-  background:transparent; color:var(--ft-dim); font:inherit; font-size:9px; cursor:pointer; }
-.ft-smart:hover { color:var(--ft-fg); }
-.ft-smart.on { color:var(--p-primary-contrast-color,#fff); background:var(--ft-on);
-  border-color:var(--ft-on); }
+/* Smart search. Same shape as refresh and clear beside it — the difference
+   between on and off is colour, which is how every other toggle on this node
+   reads. */
+.ft-smart.on { color:var(--ft-on); }
 .ft-undo { display:inline-flex; vertical-align:-1px; margin-left:4px; padding:1px;
   border:none; border-radius:2px; background:transparent; color:var(--ft-dim);
   cursor:pointer; }
@@ -327,6 +325,10 @@ const CSS = `
 .ft-acts button { display:flex; padding:3px; border:none; border-radius:3px; background:transparent;
   color:var(--ft-dim); cursor:pointer; }
 .ft-acts button:hover:not(:disabled) { color:var(--ft-fg); }
+/* An enabled toggle keeps its colour on hover. The generic hover rule above is
+   more specific than `.ft-smart.on`, so without this, pointing at a switch that
+   is on makes it look off. */
+.ft-acts button.ft-smart.on:hover, .ft-acts button.ft-funnel.on:hover { color:var(--ft-on); }
 .ft-acts button:disabled { opacity:.2; cursor:default; }
 .ft-acts svg { width:11px; height:11px; }
 
@@ -340,6 +342,7 @@ const ICON = {
     search: SVG('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'),
     refresh: SVG('<path d="M21 12a9 9 0 0 0-9-9 9.8 9.8 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.8 9.8 0 0 0 6.7-2.7L21 16"/><path d="M16 16h5v5"/>'),
     x: SVG('<path d="M18 6 6 18M6 6l12 12"/>'),
+    spark: SVG('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/><circle cx="12" cy="12" r="2.6"/>'),
     funnel: SVG('<path d="M22 3H2l8 9.5V19l4 2v-8.5L22 3Z"/>'),
     eye: SVG('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
 };
@@ -566,6 +569,17 @@ class ReferenceBody {
             setTimeout(tick, 3000);
         };
         setTimeout(tick, 3000);
+    }
+
+    /** What the Smart button says on hover. Carries the sentence actually
+     *  searched when there is one — that is the detail worth surfacing, and a
+     *  tooltip is where it costs no layout. */
+    smartTitle() {
+        if (this.get("smart") === false) {
+            return "Smart search is off. Your words are searched exactly as typed — right for a title, a line of dialogue, or a term you want matched literally.";
+        }
+        if (this.enhanced) return `Smart search is on. Searched as: ${this.enhanced}`;
+        return "Smart search is on. Your words are rewritten into the descriptive register the frames were described in, which finds more of them.";
     }
 
     /** Minutes and seconds left on the current code, or nothing if unknown. */
@@ -846,14 +860,10 @@ class ReferenceBody {
         if (this.likeOf) {
             return `Like <b>${esc(this.likeOf.filmTitle || "that frame")}</b>${undo("unlike", "Back to the text search")}`;
         }
-        if (this.rows.length) {
-            // Named, not hidden: the results answer the rewritten sentence, and
-            // a search you cannot see is one you cannot correct.
-            const via = this.enhanced
-                ? ` · <span class="ft-via" title="Searched as: ${esc(this.enhanced)}">rewritten</span>`
-                : "";
-            return `${this.rows.length} frames${via} · click one to use it`;
-        }
+        // The rewrite used to be spelled out here. It belongs on the button
+        // that controls it — a word in the status line said the same thing in
+        // a worse place, and moved the count around every time it appeared.
+        if (this.rows.length) return `${this.rows.length} frames · click one to use it`;
         return this.driven ? "query_in" : "";
     }
 
@@ -895,7 +905,9 @@ class ReferenceBody {
         <span class="ft-acts">
           <button class="ft-funnel${this.filtersOpen || this.filterCount ? " on" : ""}" data-act="filters"
                 title="Filter by shot, angle, light, setting, style">${ICON.funnel}${this.filterCount ? `<span>${this.filterCount}</span>` : ""}</button>
-        <select class="ft-mode" title="How the library is searched">
+          <button class="ft-smart${this.get("smart") === false ? "" : " on"}" data-act="smart"
+                  title="${esc(this.smartTitle())}">${ICON.spark}</button>
+          <select class="ft-mode" title="How the library is searched">
             ${MODES.map((m) => `<option value="${m.key}"${m.key === mode ? " selected" : ""}>${m.label}</option>`).join("")}
           </select>
           <input class="ft-size" type="range" min="56" max="220" step="4"
