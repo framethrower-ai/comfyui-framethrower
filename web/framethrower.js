@@ -25,8 +25,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const NODE = "FrameThrowerReference";
-// /api/v1/search caps a call at 50 and has no offset, so one search is one
-// page. Endless scroll went with it rather than scrolling into nothing.
+// One call to /api/v1/search. Scrolling to the bottom asks for the next
+// page by offset; v1 stops ranking past 500, which is where the grid ends.
 const PAGE_SIZE = 50;
 
 /** One /status request per page load, shared by every node on the canvas. */
@@ -51,29 +51,51 @@ function installDropHandler() {
         e.dataTransfer.dropEffect = "copy";
     });
 
-    canvas.addEventListener("drop", (e) => {
+    canvas.addEventListener("drop", async (e) => {
         const row = dragging;
         if (!row) return;
         e.preventDefault();
         e.stopPropagation();                   // Comfy also handles drops, for files
         dragging = null;
+
+        // A plain LoadImage, not another node of ours. What lands on the canvas
+        // is then an ordinary Comfy node that works in any workflow and does
+        // not depend on this package existing — which is the point of dragging
+        // a picture out rather than wiring a socket.
+        //
+        // LoadImage reads the input folder by filename and knows nothing about
+        // URLs, so the server fetches the frame to disk first and hands back
+        // the name it saved it under.
+        const pos = app.canvas.convertEventToCanvasOffset(e);
         try {
-            const node = LiteGraph.createNode(NODE);
-            if (!node) return;
+            const label = [row.filmTitle, row.year].filter(Boolean).join(" ") || "frame";
+            const res = await api.fetchApi("/framethrower/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: row.fullSrc || row.src, name: `${label}_${row.id}` }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `Could not save the frame (${res.status})`);
+
+            const node = LiteGraph.createNode("LoadImage");
+            if (!node) throw new Error("LoadImage is not available");
             app.graph.add(node);
-            node.pos = app.canvas.convertEventToCanvasOffset(e);
-            const pinned = node.widgets?.find((w) => w.name === "pinned");
-            if (pinned) pinned.value = JSON.stringify(row);
-            const query = node.widgets?.find((w) => w.name === "query");
-            if (query) query.value = row.filmTitle || "";
-            if (node.ftUI) {
-                node.ftUI.pinnedId = row.id;
-                node.ftUI.rows = [row];
-                node.ftUI.render();
+            node.pos = pos;
+            const w = node.widgets?.find((x) => x.name === "image");
+            if (w) {
+                // The combo only offers what it listed at load time, so a file
+                // saved a moment ago has to be added to its options by hand.
+                if (Array.isArray(w.options?.values) && !w.options.values.includes(data.filename)) {
+                    w.options.values.push(data.filename);
+                }
+                w.value = data.filename;
+                w.callback?.(data.filename);
             }
+            node.title = label;
             app.graph.setDirtyCanvas(true, true);
         } catch (err) {
             console.error("[FrameThrower] could not drop frame:", err);
+            alert(`Could not add that frame: ${err.message}`);
         }
     });
 }
@@ -141,11 +163,10 @@ const CSS = `
 .ft-cell:hover { box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.6); }
 /* Selected. Two rings — the accent inside, a dark one outside — so it reads
    against a bright frame and a dark one both, which a single inset line does
-   not. Dimming the others is what actually makes it findable in a grid of 50. */
+   not. Nothing else is dimmed: the other frames are still the thing you are
+   choosing between, and greying them out made the grid look disabled. */
 .ft-cell.on { box-shadow:inset 0 0 0 2.5px var(--ft-on), 0 0 0 1px rgba(0,0,0,.9);
   outline:1px solid var(--ft-on); outline-offset:1px; z-index:1; }
-.ft-grid.picked .ft-cell:not(.on) { opacity:.42; }
-.ft-grid.picked .ft-cell:not(.on):hover { opacity:1; }
 .ft-cell.on::after { content:""; position:absolute; inset:0;
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.35); pointer-events:none; }
 .ft-cell img { width:100%; height:100%; object-fit:cover; display:block; }
@@ -270,6 +291,8 @@ class ReferenceBody {
         this.lastKey = "";
         this.timer = null;
         this.debounce = null;
+        this.more = false;
+        this.done = false;
         this.status_ = null;      // null until /status answers; then {configured,…}
         this.mirrored = null;     // last text seen on the query_in wire
         this.watch = null;
@@ -511,7 +534,7 @@ class ReferenceBody {
         return data;
     }
 
-    async search() {
+    async search({ append = false } = {}) {
         const q = String(this.get("query") || "").trim();
         const mode = this.get("mode") || "hybrid";
         if (!q) {
@@ -520,20 +543,41 @@ class ReferenceBody {
             return;
         }
         const key = `${q}::${mode}`;
-        if (key === this.lastKey && this.rows.length) return;
-        this.lastKey = key;
-        this.loading = true;
-        this.error = null;
-        this.tick(3000);
+        if (!append && key === this.lastKey && this.rows.length) return;
+        if (append) {
+            this.more = true;
+        } else {
+            this.lastKey = key;
+            this.loading = true;
+            this.error = null;
+            this.done = false;
+            this.tick(3000);
+        }
         this.render();
 
         try {
-            const data = await this.post({ query: q, limit: PAGE_SIZE, mode });
-            this.rows = data.results || [];
+            const data = await this.post({
+                query: q, limit: PAGE_SIZE, mode,
+                offset: append ? this.rows.length : 0,
+            });
+            const rows = data.results || [];
+            if (append) {
+                // The vector index can return the same frame in overlapping
+                // windows, and a duplicate id would break the grid's diff too.
+                const seen = new Set(this.rows.map((r) => r.id));
+                const fresh = rows.filter((r) => !seen.has(r.id));
+                if (!fresh.length) this.done = true;
+                this.rows = this.rows.concat(fresh);
+            } else {
+                this.rows = rows;
+            }
+            if (data.exhausted) this.done = true;
         } catch (e) {
-            this.error = e.message;
+            if (append) this.done = true;   // don't hammer a failing endpoint
+            else this.error = e.message;
         } finally {
             this.loading = false;
+            this.more = false;
             clearInterval(this.timer);
             this.progress = 0;
             this.render();
@@ -623,21 +667,24 @@ class ReferenceBody {
       </div>`
             )
             .join("");
-        return `<div class="ft-grid${this.pinnedId ? " picked" : ""}">${cells}</div>`;
+        const tail = this.more ? `<div class="ft-more">Loading more…</div>`
+            : this.done && this.rows.length >= PAGE_SIZE ? `<div class="ft-more">End of results</div>` : "";
+        return `<div class="ft-grid">${cells}</div>${tail}`;
     }
 
     status() {
         if (this.error) return "Error";
         if (this.loading) return "Searching…";
-        // No film title here. The selected cell is already outlined in the grid
-        // and captioned on hover, so repeating it in the footer said nothing
-        // twice and pushed the connection state around as titles changed length.
-        if (this.rows.length) {
-            return this.pinnedId
-                ? `${this.rows.length} frames · 1 selected`
-                : `${this.rows.length} frames · click one to use it`;
+        // The selected film, named. It is the one thing you want confirmed
+        // before queueing — that the picture about to go downstream is the one
+        // you meant — and the outline in the grid tells you which cell, not
+        // which film.
+        if (this.pinnedId) {
+            const r = this.rows.find((x) => x.id === this.pinnedId);
+            if (r) return `<b>${esc(r.filmTitle || "Frame")}</b>${r.year ? ` · ${r.year}` : ""}`;
+            return "1 selected";
         }
-        if (this.pinnedId) return "1 selected";
+        if (this.rows.length) return `${this.rows.length} frames · click one to use it`;
         return this.driven ? "query_in" : "";
     }
 
@@ -716,6 +763,12 @@ class ReferenceBody {
         const scroll = this.root.querySelector(".ft-scroll");
         if (scroll) {
             scroll.scrollTop = keep;
+            scroll.onscroll = () => {
+                if (this.loading || this.more || this.done || !this.rows.length) return;
+                if (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 140) {
+                    this.search({ append: true });
+                }
+            };
         }
 
         // Dragging a frame onto the canvas drops a new Reference node already
@@ -760,7 +813,7 @@ class ReferenceBody {
                 } else if (act === "refresh") {
                     // Also the way back from a connect that failed.
                     if (!this.status_?.configured) this.checkStatus({ fresh: true });
-                    else { this.lastKey = ""; this.search(); }
+                    else { this.lastKey = ""; this.done = false; this.search(); }
                 } else this.clear();
                 return;
             }

@@ -10,6 +10,7 @@ framethrower.ai for exactly this reason.
 """
 
 import json
+import re
 import os
 import urllib.request
 import urllib.error
@@ -83,9 +84,10 @@ def _post(path, payload, token=None, base=None, timeout=60):
         raise FrameThrowerError(f"Could not reach {base}: {exc.reason}") from exc
 
 
-# The most /api/v1/search will return in one call. There is no offset on the
-# public API, so this is also the total a query can show.
+# The most /api/v1/search returns in one call. Paging past it is what `offset`
+# is for; v1 caps that at 500, so 500 frames is the deepest a query can go.
 MAX_LIMIT = 50
+MAX_OFFSET = 500
 
 
 def _row(r):
@@ -112,7 +114,7 @@ def _row(r):
     }
 
 
-def search(query, limit=MAX_LIMIT, mode="hybrid"):
+def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0):
     """Text search against the public, per-account API.
 
     /api/external/* was the wrong door: it checks one shared EXTERNAL_API_TOKEN
@@ -124,7 +126,12 @@ def search(query, limit=MAX_LIMIT, mode="hybrid"):
         return []
     data = _post(
         "/api/v1/search",
-        {"query": query.strip(), "limit": min(int(limit), MAX_LIMIT), "mode": mode},
+        {
+            "query": query.strip(),
+            "limit": min(int(limit), MAX_LIMIT),
+            "mode": mode,
+            "offset": max(0, min(int(offset), MAX_OFFSET)),
+        },
     )
     return [_row(r) for r in (data.get("data") or [])]
 
@@ -214,18 +221,66 @@ try:
             if body.get("imageUrl"):
                 results = search_by_image(body["imageUrl"])
                 return _web.json_response({"results": results, "exhausted": True})
-            results = search(
-                body.get("query", ""),
-                limit=int(body.get("limit", MAX_LIMIT)),
-                mode=body.get("mode", "hybrid"),
-            )
-            # v1 has no offset, so one call is all there is. Saying so lets the
-            # grid stop asking rather than scrolling into a silent nothing.
-            return _web.json_response({"results": results, "exhausted": True})
+            limit = int(body.get("limit", MAX_LIMIT))
+            offset = int(body.get("offset", 0))
+            results = search(body.get("query", ""), limit=limit,
+                             mode=body.get("mode", "hybrid"), offset=offset)
+            # Exhausted when the page came back short, or when the next page
+            # would start past what v1 will rank.
+            exhausted = len(results) < limit or (offset + limit) >= MAX_OFFSET
+            return _web.json_response({"results": results, "exhausted": exhausted})
         except FrameThrowerError as exc:
             return _web.json_response({"error": str(exc)}, status=502)
         except Exception as exc:  # noqa: BLE001 - surface anything to the node UI
             return _web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+
+    @_routes.post("/framethrower/save")
+    async def _route_save(request):
+        """Download a frame into ComfyUI's input folder and return its filename.
+
+        This is what makes a dragged frame a real LoadImage node rather than a
+        second FrameThrower node. LoadImage reads from the input folder by name
+        — it has no notion of a URL — so the picture has to exist on disk before
+        a node can point at it. The upside is that what lands on the canvas is
+        an ordinary Comfy node that works in any workflow, with no dependency on
+        this package at all.
+        """
+        try:
+            body = await request.json()
+            url = (body.get("url") or "").strip()
+            name = (body.get("name") or "frame").strip()
+        except Exception:
+            return _web.json_response({"error": "Bad request"}, status=400)
+        if not url.startswith(("http://", "https://")):
+            return _web.json_response({"error": "A frame URL is required"}, status=400)
+
+        try:
+            import folder_paths
+            input_dir = folder_paths.get_input_directory()
+        except Exception:
+            input_dir = os.path.join(os.getcwd(), "input")
+        os.makedirs(input_dir, exist_ok=True)
+
+        # Keep the film in the filename so the input folder stays readable, and
+        # the frame id so two stills from one film do not collide.
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:60].strip("_") or "frame"
+        ext = ".png" if url.lower().endswith(".png") else ".jpg"
+        filename = f"ft_{safe}{ext}"
+        path = os.path.join(input_dir, filename)
+
+        # Already downloaded — same frame dragged twice is the same file.
+        if not os.path.isfile(path):
+            try:
+                data = fetch_bytes(url, timeout=30)
+            except Exception as exc:  # noqa: BLE001
+                return _web.json_response({"error": f"Could not fetch the frame: {exc}"}, status=502)
+            try:
+                with open(path, "wb") as fh:
+                    fh.write(data)
+            except OSError as exc:
+                return _web.json_response({"error": f"Could not write to {input_dir}: {exc}"}, status=500)
+
+        return _web.json_response({"filename": filename})
 
     @_routes.post("/framethrower/pair")
     async def _route_pair(request):
