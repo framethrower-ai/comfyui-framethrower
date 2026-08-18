@@ -39,13 +39,31 @@ const MODES = [
     { key: "description", label: "Text" },
 ];
 
+/**
+ * Outfit — the face the FrameThrower landing page and app are set in, so a
+ * frame arriving in a graph looks like it came from the same place it did.
+ *
+ * Bundled as a 14 KB latin subset rather than pulled from Google: a custom node
+ * has no business making a request to a third party on every canvas load, and
+ * plenty of ComfyUI installs are offline or behind a firewall, where a webfont
+ * import is a silent stall followed by a fallback nobody chose.
+ *
+ * The URL is resolved at injection time from this file's own location, because
+ * the path a node's assets are served from depends on the folder name on disk.
+ */
+const FONT_CSS = (url) => `
+@font-face { font-family:'Outfit FT'; src:url('${url}') format('woff2');
+  font-weight:300 600; font-style:normal; font-display:swap; }
+`;
+
 const CSS = `
 .ft { --ft-line:var(--border-color,#3a3a3a);
   --ft-on:var(--p-primary-color,#2563eb);
   --ft-dim:var(--descrip-text,#9a9a9a);
   --ft-fg:var(--input-text,#e8e8e8);
   display:flex; flex-direction:column; height:100%; min-height:130px; overflow:hidden;
-  color:var(--ft-fg); font-family:inherit; font-size:11px; }
+  color:var(--ft-fg); font-size:11px; font-weight:400;
+  font-family:'Outfit FT','Outfit',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
 
 /* one row: search box and the mode it searches in */
 .ft-search { flex:0 0 auto; display:flex; align-items:center; gap:6px; padding:0 2px 6px; }
@@ -101,6 +119,11 @@ const CSS = `
 .ft-conn .ft-go { padding:5px 12px; border:none; border-radius:3px; background:var(--ft-on);
   color:var(--p-primary-contrast-color,#fff); font:inherit; font-size:11px; cursor:pointer; }
 .ft-conn .ft-go:hover { filter:brightness(1.1); }
+/* A rule with OR sitting in it, so the two routes read as alternatives rather
+   than as a step followed by a smaller step. */
+.ft-or { display:flex; align-items:center; gap:8px; width:100%; max-width:250px;
+  font-size:8.5px; letter-spacing:.14em; color:var(--ft-dim); opacity:.6; }
+.ft-or::before, .ft-or::after { content:""; flex:1 1 auto; height:1px; background:var(--ft-line); }
 .ft-paste { display:flex; gap:4px; width:100%; max-width:250px; }
 .ft-paste input { flex:1 1 auto; min-width:0; padding:4px 6px; border:1px solid var(--ft-line);
   border-radius:3px; background:transparent; color:var(--ft-fg); font:inherit; font-size:10px;
@@ -162,7 +185,9 @@ function injectCss() {
     if (document.getElementById("ft-node-css")) return;
     const el = document.createElement("style");
     el.id = "ft-node-css";
-    el.textContent = CSS;
+    // import.meta.url is this file's served path, whatever the folder is called.
+    const font = new URL("./Outfit.woff2", import.meta.url).href;
+    el.textContent = FONT_CSS(font) + CSS;
     document.head.appendChild(el);
 }
 
@@ -354,8 +379,9 @@ class ReferenceBody {
      *  browser tab from the node is meaningless, and pasting is the only way. */
     connectPanel() {
         return `<div class="ft-conn">
-      <p>Sign in to FrameThrower to search the library. Free account, no card.</p>
+      <p>Sign in to FrameThrower to search the library.</p>
       <button class="ft-go" data-act="open">Connect to account</button>
+      <span class="ft-or">OR</span>
       <div class="ft-paste">
         <input type="password" placeholder="or paste a token: ft_…" spellcheck="false"/>
         <button data-act="save">Save</button>
