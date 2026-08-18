@@ -97,9 +97,15 @@ MAX_OFFSET = 500
 #: Filter params /api/v1/search accepts. An allow-list rather than forwarding
 #: the whole body: the UI and the API should be able to disagree about a key
 #: without this quietly shipping it upstream.
+#
+# Keep this in step with FILTERS in web/framethrower.js. A key present there and
+# missing here is dropped silently: the dropdown works, the results do not
+# change, and nothing says why. That has now happened twice — once for the whole
+# set, once for `lighting`.
 FILTER_KEYS = (
     "shot_type", "shot_size", "camera_angle", "time_of_day", "setting",
     "visual_style", "lens", "lens_character", "depth_of_field",
+    "lighting", "lighting_type",
     "director", "genre", "era", "film_title", "year_min", "year_max",
 )
 

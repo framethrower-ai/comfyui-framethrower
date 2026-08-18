@@ -117,26 +117,38 @@ function installDropHandler() {
 /** Every native widget, so they can all be hidden in one pass. */
 const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart"];
 
-// v1 takes hybrid and description. "semantic" is accepted but deprecated —
-// it is served as hybrid — so offering it would be offering the same thing
-// twice under a name that suggests otherwise.
-const MODES = [
-    { key: "hybrid", label: "Hybrid" },
-    { key: "description", label: "Text" },
-];
+// The node always searches hybrid. `description` ranks on the written
+// descriptions alone and is worse for nearly every query anyone brings to a
+// reference tool, and a control that is wrong to touch is a control that
+// should not be there. The widget still exists for a workflow that sets it.
 
 /**
- * The filters worth having on a node this size, from the vocabulary
- * /api/v1/search shares with /browse. Not all of them — director, genre and
- * film_title are free text and belong in the query, and era duplicates the
- * years. These five are the ones you cannot say in words and get reliably:
- * asking for "a close-up" ranks frames that mention close-ups.
+ * The filters, in the same v4 vocabulary the app's own tag filters use.
+ *
+ * These are the axes you cannot say in words and get reliably — asking for "a
+ * close-up" ranks frames whose description mentions close-ups rather than
+ * frames that are one. Lighting is the one worth knowing about: it is what is
+ * lighting the frame (neon, firelight, a screen), which is a different question
+ * from the time of day, and it was not reachable through the API until now.
+ *
+ * Left out: director, genre and film_title are free text and belong in the
+ * query itself.
+ *
+ * Every value here was tested against live search on 2026-08-18. The app's own
+ * tag UI offers a finer v4 vocabulary — extreme_closeup, cowboy_shot,
+ * medium_wide, ground_level — and all of those match zero frames through
+ * search, so they are deliberately absent. A dropdown option that can never
+ * return a result is worse than one that is not there.
  */
 const FILTERS = [
     { key: "shot_type", label: "Shot", values: ["closeup", "medium", "fullbody", "wide", "establishing"] },
     { key: "camera_angle", label: "Angle", values: ["eye_level", "low_angle", "high_angle", "overhead", "top_down", "dutch_angle", "pov", "worms_eye", "birds_eye"] },
-    { key: "time_of_day", label: "Light", values: ["day", "night", "golden_hour", "blue_hour", "dawn", "dusk", "overcast", "interior_indeterminate"] },
+    { key: "time_of_day", label: "Time", values: ["day", "night", "golden_hour", "blue_hour", "dawn", "dusk", "overcast"] },
+    { key: "lighting", label: "Light", values: ["sun", "window", "moonlight", "practical", "neon", "fluorescent", "firelight", "candlelight", "streetlamp", "screen_glow", "headlight", "lightning"] },
     { key: "setting", label: "Where", values: ["interior", "exterior"] },
+    { key: "era", label: "Era", values: ["ancient", "medieval", "renaissance", "1800s", "1900s_1910s", "1920s", "1930s", "1940s", "1950s", "1960s", "1970s", "1980s", "1990s", "2000s", "2010s", "contemporary", "near_future", "far_future", "fantasy"] },
+    { key: "depth_of_field", label: "Focus", values: ["shallow", "deep", "rack_focus", "medium"] },
+    { key: "lens", label: "Lens", values: ["anamorphic", "spherical", "vintage_soft"] },
     { key: "visual_style", label: "Style", values: ["live_action", "anime", "noir", "cg_stylized", "cg_photorealistic", "cartoon_2d", "stop_motion", "painterly", "documentary", "expressionist", "surreal", "minimalist", "watercolor", "rotoscope", "mixed_media"] },
 ];
 
@@ -186,21 +198,23 @@ const CSS = `
   color:var(--ft-fg); font:inherit; font-size:11.5px; padding:2px 0; }
 .ft-search input::placeholder { color:var(--ft-dim); opacity:.6; }
 .ft-search input:disabled { color:var(--ft-dim); font-style:italic; }
-.ft-mode { flex:0 0 auto; padding:2px 2px; border:none; background:transparent;
-  color:var(--ft-dim); font:inherit; font-size:10px; outline:none; cursor:pointer;
-  -webkit-appearance:none; appearance:none; text-align:right; }
-.ft-mode:hover { color:var(--ft-fg); }
-.ft-mode option { background:var(--comfy-menu-bg,#252525); color:var(--ft-fg); }
 
 /* filter bar, above the search field */
-.ft-filters { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px;
-  padding:0 2px 6px; }
-.ft-f { display:flex; align-items:center; gap:3px; font-size:9px; color:var(--ft-dim); }
+/* A grid rather than a wrapping flex: nine controls of different label widths
+   wrap into a ragged stack, and columns keep the rows readable at any node
+   width. auto-fit means a narrow node gets two per row and a wide one gets
+   five, without a breakpoint. */
+.ft-filters { flex:0 0 auto; display:grid; gap:3px 6px; padding:0 2px 6px;
+  grid-template-columns:repeat(auto-fit,minmax(96px,1fr)); align-items:center; }
+.ft-f { display:flex; align-items:center; gap:3px; min-width:0; font-size:9px;
+  color:var(--ft-dim); }
+.ft-f > span { flex:0 0 auto; }
+.ft-f select { flex:1 1 auto; min-width:0; }
 .ft-f select { border:1px solid var(--ft-line); border-radius:3px; background:transparent;
   color:var(--ft-fg); font:inherit; font-size:9.5px; padding:1px 2px; outline:none;
-  cursor:pointer; max-width:88px; }
+  cursor:pointer; }
 .ft-f select option { background:var(--comfy-menu-bg,#252525); }
-.ft-clearf { border:none; background:transparent; color:var(--ft-dim); font:inherit;
+.ft-clearf { grid-column:1/-1; justify-self:start; border:none; background:transparent; color:var(--ft-dim); font:inherit;
   font-size:9px; cursor:pointer; text-decoration:underline; }
 .ft-clearf:hover { color:var(--ft-fg); }
 .ft-funnel { position:relative; flex:0 0 auto; display:flex; align-items:center; gap:2px;
@@ -656,13 +670,16 @@ class ReferenceBody {
 
     async search({ append = false } = {}) {
         const q = String(this.get("query") || "").trim();
-        const mode = this.get("mode") || "hybrid";
         if (!q) {
             this.rows = [];
             this.render();
             return;
         }
-        const key = `${q}::${mode}`;
+        // Read from the widget, not a local: the mode dropdown is gone from the
+        // face but the widget remains, so a saved workflow that set it is still
+        // honoured — and the cache key still has to change when it differs.
+        const mode = this.get("mode") || "hybrid";
+        const key = `${q}::${mode}::${JSON.stringify(this.filters)}`;
         if (!append && key === this.lastKey && this.rows.length) return;
         if (append) {
             this.more = true;
@@ -868,7 +885,6 @@ class ReferenceBody {
         const keep = this.root.querySelector(".ft-scroll")?.scrollTop || 0;
         const focused = this.root.querySelector(".ft-search input") === document.activeElement;
         const caret = focused ? this.root.querySelector(".ft-search input").selectionStart : null;
-        const mode = this.get("mode") || "hybrid";
 
         this.root.innerHTML = `
       ${this.filtersOpen ? `<div class="ft-filters">${FILTERS.map((f) => `
@@ -901,12 +917,9 @@ class ReferenceBody {
         </span>
         <span class="ft-acts">
           <button class="ft-funnel${this.filtersOpen || this.filterCount ? " on" : ""}" data-act="filters"
-                title="Filter by shot, angle, light, setting, style">${ICON.funnel}${this.filterCount ? `<span>${this.filterCount}</span>` : ""}</button>
+                title="Filter by shot, angle, time, lighting, era, focus, lens and style">${ICON.funnel}${this.filterCount ? `<span>${this.filterCount}</span>` : ""}</button>
           <button class="ft-smart${this.get("smart") === false ? "" : " on"}" data-act="smart"
                 title="${esc(this.smartTitle())}">${ICON.spark}</button>
-        <select class="ft-mode" title="How the library is searched">
-            ${MODES.map((m) => `<option value="${m.key}"${m.key === mode ? " selected" : ""}>${m.label}</option>`).join("")}
-          </select>
           <input class="ft-size" type="range" min="56" max="220" step="4"
                  value="${this.thumb}" title="Thumbnail size"/>
           <button data-act="refresh" title="Search again">${ICON.refresh}</button>
@@ -942,9 +955,6 @@ class ReferenceBody {
         for (const el of this.root.querySelectorAll("[data-filter]")) {
             el.onchange = () => this.setFilter(el.dataset.filter, el.value);
         }
-
-        const sel = this.root.querySelector(".ft-mode");
-        if (sel) sel.onchange = () => { this.set("mode", sel.value); this.lastKey = ""; this.search(); };
 
         // Drives a CSS variable rather than re-rendering: a re-render per slider
         // step would rebuild every <img> and make the grid flash while dragging.
