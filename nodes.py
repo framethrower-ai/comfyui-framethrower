@@ -193,7 +193,4 @@ class FrameThrowerReference:
 
 
 NODE_CLASS_MAPPINGS = {"FrameThrowerReference": FrameThrowerReference}
-# "FT" leads the name because that is what it gets called, and the node search
-# is a substring match — typing FT found nothing when this read
-# "Reference Node (FrameThrower)".
-NODE_DISPLAY_NAME_MAPPINGS = {"FrameThrowerReference": "FT Reference Node"}
+NODE_DISPLAY_NAME_MAPPINGS = {"FrameThrowerReference": "FrameThrower Reference Node"}
