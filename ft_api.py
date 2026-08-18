@@ -89,6 +89,15 @@ def _post(path, payload, token=None, base=None, timeout=60):
 MAX_LIMIT = 50
 MAX_OFFSET = 500
 
+#: Filter params /api/v1/search accepts. An allow-list rather than forwarding
+#: the whole body: the UI and the API should be able to disagree about a key
+#: without this quietly shipping it upstream.
+FILTER_KEYS = (
+    "shot_type", "shot_size", "camera_angle", "time_of_day", "setting",
+    "visual_style", "lens", "lens_character", "depth_of_field",
+    "director", "genre", "era", "film_title", "year_min", "year_max",
+)
+
 
 def _row(r):
     """One /api/v1 result, flattened into what the node's UI and nodes.py want.
@@ -114,7 +123,7 @@ def _row(r):
     }
 
 
-def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0):
+def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None):
     """Text search against the public, per-account API.
 
     /api/external/* was the wrong door: it checks one shared EXTERNAL_API_TOKEN
@@ -124,15 +133,16 @@ def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0):
     """
     if not query or not query.strip():
         return []
-    data = _post(
-        "/api/v1/search",
-        {
-            "query": query.strip(),
-            "limit": min(int(limit), MAX_LIMIT),
-            "mode": mode,
-            "offset": max(0, min(int(offset), MAX_OFFSET)),
-        },
-    )
+    payload = {
+        "query": query.strip(),
+        "limit": min(int(limit), MAX_LIMIT),
+        "mode": mode,
+        "offset": max(0, min(int(offset), MAX_OFFSET)),
+    }
+    for key, value in (filters or {}).items():
+        if key in FILTER_KEYS and value not in (None, "", []):
+            payload[key] = value
+    data = _post("/api/v1/search", payload)
     return [_row(r) for r in (data.get("data") or [])]
 
 
@@ -223,8 +233,11 @@ try:
                 return _web.json_response({"results": results, "exhausted": True})
             limit = int(body.get("limit", MAX_LIMIT))
             offset = int(body.get("offset", 0))
-            results = search(body.get("query", ""), limit=limit,
-                             mode=body.get("mode", "hybrid"), offset=offset)
+            results = search(
+                body.get("query", ""), limit=limit,
+                mode=body.get("mode", "hybrid"), offset=offset,
+                filters={k: body[k] for k in FILTER_KEYS if k in body},
+            )
             # Exhausted when the page came back short, or when the next page
             # would start past what v1 will rank.
             exhausted = len(results) < limit or (offset + limit) >= MAX_OFFSET

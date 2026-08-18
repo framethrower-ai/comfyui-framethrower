@@ -112,6 +112,24 @@ const MODES = [
 ];
 
 /**
+ * The filters worth having on a node this size, from the vocabulary
+ * /api/v1/search shares with /browse. Not all of them — director, genre and
+ * film_title are free text and belong in the query, and era duplicates the
+ * years. These five are the ones you cannot say in words and get reliably:
+ * asking for "a close-up" ranks frames that mention close-ups.
+ */
+const FILTERS = [
+    { key: "shot_type", label: "Shot", values: ["closeup", "medium", "fullbody", "wide", "establishing"] },
+    { key: "camera_angle", label: "Angle", values: ["eye_level", "low_angle", "high_angle", "overhead", "top_down", "dutch_angle", "pov", "worms_eye", "birds_eye"] },
+    { key: "time_of_day", label: "Light", values: ["day", "night", "golden_hour", "blue_hour", "dawn", "dusk", "overcast", "interior_indeterminate"] },
+    { key: "setting", label: "Where", values: ["interior", "exterior"] },
+    { key: "visual_style", label: "Style", values: ["live_action", "anime", "noir", "cg_stylized", "cg_photorealistic", "cartoon_2d", "stop_motion", "painterly", "documentary", "expressionist", "surreal", "minimalist", "watercolor", "rotoscope", "mixed_media"] },
+];
+
+/** night → Night, golden_hour → Golden hour. */
+const pretty = (v) => v.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+/**
  * Outfit — the face the FrameThrower landing page and app are set in, so a
  * frame arriving in a graph looks like it came from the same place it did.
  *
@@ -149,6 +167,32 @@ const CSS = `
   -webkit-appearance:none; appearance:none; text-align:right; }
 .ft-mode:hover { color:var(--ft-fg); }
 .ft-mode option { background:var(--comfy-menu-bg,#252525); color:var(--ft-fg); }
+
+/* filter bar, above the search field */
+.ft-filters { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px;
+  padding:0 2px 6px; }
+.ft-f { display:flex; align-items:center; gap:3px; font-size:9px; color:var(--ft-dim); }
+.ft-f select { border:1px solid var(--ft-line); border-radius:3px; background:transparent;
+  color:var(--ft-fg); font:inherit; font-size:9.5px; padding:1px 2px; outline:none;
+  cursor:pointer; max-width:88px; }
+.ft-f select option { background:var(--comfy-menu-bg,#252525); }
+.ft-clearf { border:none; background:transparent; color:var(--ft-dim); font:inherit;
+  font-size:9px; cursor:pointer; text-decoration:underline; }
+.ft-clearf:hover { color:var(--ft-fg); }
+.ft-funnel { position:relative; flex:0 0 auto; display:flex; align-items:center; gap:2px;
+  padding:3px; border:none; border-radius:3px; background:transparent; color:var(--ft-dim);
+  cursor:pointer; font:inherit; font-size:9px; }
+.ft-funnel svg { width:11px; height:11px; }
+.ft-funnel:hover { color:var(--ft-fg); }
+.ft-funnel.on { color:var(--ft-on); }
+
+/* "more like this", on each frame */
+.ft-eye { position:absolute; top:2px; right:2px; z-index:2; display:flex; padding:2px;
+  border:none; border-radius:3px; background:rgba(0,0,0,.55); color:#fff; cursor:pointer;
+  opacity:0; transition:opacity .12s; }
+.ft-eye svg { width:11px; height:11px; }
+.ft-cell:hover .ft-eye { opacity:.85; }
+.ft-eye:hover { opacity:1; background:var(--ft-on); }
 
 /* the references field — the only framed element, and the only one that grows */
 .ft-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; padding:3px;
@@ -265,6 +309,8 @@ const ICON = {
     search: SVG('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'),
     refresh: SVG('<path d="M21 12a9 9 0 0 0-9-9 9.8 9.8 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.8 9.8 0 0 0 6.7-2.7L21 16"/><path d="M16 16h5v5"/>'),
     x: SVG('<path d="M18 6 6 18M6 6l12 12"/>'),
+    funnel: SVG('<path d="M22 3H2l8 9.5V19l4 2v-8.5L22 3Z"/>'),
+    eye: SVG('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
 };
 
 const esc = (s) =>
@@ -295,6 +341,8 @@ class ReferenceBody {
         this.done = false;
         this.status_ = null;      // null until /status answers; then {configured,…}
         this.mirrored = null;     // last text seen on the query_in wire
+        this.filtersOpen = false;
+        this.likeOf = null;      // the frame we are searching 'more like this' from
         this.watch = null;
         this.connError = null;
         this.connStep = null;   // null | "paste" | "code"
@@ -324,6 +372,24 @@ class ReferenceBody {
         if (!w) return;
         w.value = value;
         this.node.setDirtyCanvas(true, true);
+    }
+
+    /** Chosen filters, on node properties for the same reason the thumbnail
+     *  size is: they shape what you see, they belong in a saved workflow, and
+     *  they are not something another node should be able to wire into. */
+    get filters() {
+        return this.node.properties?.ftFilters || {};
+    }
+    setFilter(key, value) {
+        this.node.properties = this.node.properties || {};
+        const next = { ...this.filters };
+        if (value) next[key] = value; else delete next[key];
+        this.node.properties.ftFilters = next;
+        this.lastKey = "";          // same words, different question
+        this.search();
+    }
+    get filterCount() {
+        return Object.keys(this.filters).length;
     }
 
     /** Thumbnail size, kept in node properties so it saves with the workflow —
@@ -559,6 +625,7 @@ class ReferenceBody {
             const data = await this.post({
                 query: q, limit: PAGE_SIZE, mode,
                 offset: append ? this.rows.length : 0,
+                ...this.filters,
             });
             const rows = data.results || [];
             if (append) {
@@ -578,6 +645,39 @@ class ReferenceBody {
         } finally {
             this.loading = false;
             this.more = false;
+            clearInterval(this.timer);
+            this.progress = 0;
+            this.render();
+        }
+    }
+
+    /**
+     * Find frames that look like this one.
+     *
+     * The frame is already on a public URL, so this needs no upload and no fal
+     * key — unlike image_in, where the picture only exists as floats in a graph.
+     *
+     * It replaces the results rather than narrowing them: FrameThrower has no
+     * endpoint that takes a query and a reference image together, and pretending
+     * otherwise by filtering one set by the other would be a different, worse
+     * search wearing the same name. The words stay in the box, so one click on
+     * Refresh gets them back.
+     */
+    async searchLike(row) {
+        this.loading = true;
+        this.error = null;
+        this.done = true;              // image search returns one page
+        this.likeOf = row;
+        this.lastKey = `like::${row.id}`;
+        this.tick(9000);
+        this.render();
+        try {
+            const data = await this.post({ imageUrl: row.fullSrc || row.src });
+            this.rows = data.results || [];
+        } catch (e) {
+            this.error = e.message;
+        } finally {
+            this.loading = false;
             clearInterval(this.timer);
             this.progress = 0;
             this.render();
@@ -661,6 +761,7 @@ class ReferenceBody {
              referrerpolicy="no-referrer"
              onerror="this.closest('.ft-cell').classList.add('bad');this.remove()"/>
         <span class="ft-bad">${esc(r.filmTitle || "unavailable")}</span>
+        <button class="ft-eye" data-like="${i}" title="Find frames that look like this one">${ICON.eye}</button>
         ${r.filmTitle || r.director
                         ? `<div class="ft-cap">${r.filmTitle ? `<b>${esc(r.filmTitle)}</b>` : ""}${r.director ? `<i>${esc(r.director)}</i>` : ""}</div>`
                         : ""}
@@ -684,6 +785,9 @@ class ReferenceBody {
             if (r) return `<b>${esc(r.filmTitle || "Frame")}</b>${r.year ? ` · ${r.year}` : ""}`;
             return "1 selected";
         }
+        if (this.likeOf) {
+            return `Like <b>${esc(this.likeOf.filmTitle || "that frame")}</b> · ${this.rows.length} frames`;
+        }
         if (this.rows.length) return `${this.rows.length} frames · click one to use it`;
         return this.driven ? "query_in" : "";
     }
@@ -695,6 +799,16 @@ class ReferenceBody {
         const mode = this.get("mode") || "hybrid";
 
         this.root.innerHTML = `
+      ${this.filtersOpen ? `<div class="ft-filters">${FILTERS.map((f) => `
+        <label class="ft-f">
+          <span>${f.label}</span>
+          <select data-filter="${f.key}">
+            <option value="">Any</option>
+            ${f.values.map((v) => `<option value="${v}"${this.filters[f.key] === v ? " selected" : ""}>${pretty(v)}</option>`).join("")}
+          </select>
+        </label>`).join("")}
+        ${this.filterCount ? `<button class="ft-clearf" data-act="clearfilters">Clear ${this.filterCount}</button>` : ""}
+      </div>` : ""}
       <div class="ft-search">
         ${ICON.search}
         <input type="text" spellcheck="false"
@@ -714,7 +828,9 @@ class ReferenceBody {
           <span class="ft-stat">${this.status()}</span>
         </span>
         <span class="ft-acts">
-          <select class="ft-mode" title="How the library is searched">
+          <button class="ft-funnel${this.filtersOpen || this.filterCount ? " on" : ""}" data-act="filters"
+                title="Filter by shot, angle, light, setting, style">${ICON.funnel}${this.filterCount ? `<span>${this.filterCount}</span>` : ""}</button>
+        <select class="ft-mode" title="How the library is searched">
             ${MODES.map((m) => `<option value="${m.key}"${m.key === mode ? " selected" : ""}>${m.label}</option>`).join("")}
           </select>
           <input class="ft-size" type="range" min="56" max="220" step="4"
@@ -748,6 +864,10 @@ class ReferenceBody {
         if (paste) paste.onkeydown = (e) => {
             if (e.key === "Enter") this.connect(paste.value.trim());
         };
+
+        for (const el of this.root.querySelectorAll("[data-filter]")) {
+            el.onchange = () => this.setFilter(el.dataset.filter, el.value);
+        }
 
         const sel = this.root.querySelector(".ft-mode");
         if (sel) sel.onchange = () => { this.set("mode", sel.value); this.lastKey = ""; this.search(); };
@@ -793,7 +913,14 @@ class ReferenceBody {
             if (btn) {
                 e.stopPropagation();
                 const act = btn.dataset.act;
-                if (act === "browser") {
+                if (act === "filters") {
+                    this.filtersOpen = !this.filtersOpen;
+                    this.render();
+                } else if (act === "clearfilters") {
+                    this.node.properties.ftFilters = {};
+                    this.lastKey = "";
+                    this.search();
+                } else if (act === "browser") {
                     window.open((this.status_?.connectUrl || "https://framethrower.ai/settings?tab=api") + "&for=comfyui", "_blank", "noopener");
                     // Straight to the paste step: the token is created in that
                     // tab, and the only thing left to do is bring it back.
@@ -815,6 +942,13 @@ class ReferenceBody {
                     if (!this.status_?.configured) this.checkStatus({ fresh: true });
                     else { this.lastKey = ""; this.done = false; this.search(); }
                 } else this.clear();
+                return;
+            }
+            const eye = e.target.closest("[data-like]");
+            if (eye) {
+                e.stopPropagation();
+                const row = this.rows[Number(eye.dataset.like)];
+                if (row) this.searchLike(row);
                 return;
             }
             const cell = e.target.closest(".ft-cell");
