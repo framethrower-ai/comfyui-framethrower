@@ -19,6 +19,8 @@ import { api } from "../../scripts/api.js";
 
 const NODE = "FrameThrowerReference";
 const PAGE_SIZE = 30;
+/** Two rows of the textarea, then it scrolls. */
+const QUERY_H = 46;
 
 const CSS = `
 .ft-wrap { display:flex; flex-direction:column; height:100%; min-height:120px;
@@ -34,6 +36,8 @@ const CSS = `
   padding:2px 6px; font-size:10px; color:rgba(255,255,255,.4); }
 .ft-tools button:hover { background:rgba(255,255,255,.1); color:#fff; }
 .ft-tools button:disabled { opacity:.25; cursor:default; background:transparent; }
+.ft-gear { display:flex; align-items:center; padding:3px 5px; }
+.ft-gear.on { background:rgba(255,255,255,.12); color:#fff; }
 .ft-bar { flex:0 0 auto; height:2px; background:transparent; }
 .ft-bar > i { display:block; height:100%; background:var(--ft-accent); transition:width .1s linear; }
 .ft-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; padding:4px; }
@@ -60,6 +64,14 @@ const CSS = `
 .ft-more { padding:6px 0; text-align:center; font-size:9px; color:rgba(255,255,255,.25); }
 `;
 
+const GEAR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+  stroke-linecap="round" style="width:11px;height:11px;display:block"><circle cx="12" cy="12" r="3"/>
+  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.18V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 7.26 19.4l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 3 15.09H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9.09l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 10.25 5V4.91a2 2 0 1 1 4 0V5a1.65 1.65 0 0 0 2.82 1.18l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 21 12.09V12a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+
+/** The widgets the gear shows and hides. `query` stays out — it is the point of
+ *  the node — and `pinned` is never drawn at all. */
+const SETTINGS = ["mode", "index", "depth", "pose", "lineart"];
+
 const esc = (s) =>
     String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -84,6 +96,9 @@ class Results {
         this.progress = 0;
         this.lastKey = "";
         this.timer = null;
+        // Closed by default. Every row of settings is a row the results do not
+        // get, and the sockets already say what this node can hand downstream.
+        this.settingsOpen = false;
 
         this.root = document.createElement("div");
         this.root.className = "ft-wrap";
@@ -195,6 +210,26 @@ class Results {
         this.render();
     }
 
+    /** Show or hide mode / index / depth / pose / lineart. The node keeps its
+     *  height, so whatever the settings give up, the grid takes. */
+    applySettings() {
+        for (const name of SETTINGS) {
+            const w = this.widget(name);
+            if (w) w.hidden = !this.settingsOpen;
+        }
+        const n = this.node;
+        n.setDirtyCanvas(true, true);
+        // Nudge the layout: widget visibility changed, but the node's own size
+        // did not, and nothing else re-runs the pass.
+        n.setSize?.([n.size[0], n.size[1]]);
+    }
+
+    toggleSettings() {
+        this.settingsOpen = !this.settingsOpen;
+        this.applySettings();
+        this.render();
+    }
+
     refresh() {
         this.lastKey = "";
         this.done = false;
@@ -253,6 +288,8 @@ class Results {
       <div class="ft-top">
         <span class="ft-stat" title="${esc(this.status())}">${esc(this.status())}</span>
         <span class="ft-tools">
+          <button data-act="gear" class="ft-gear${this.settingsOpen ? " on" : ""}"
+                  title="Search mode, index and the depth / pose / lineart toggles">${GEAR}</button>
           <button data-act="refresh">Refresh</button>
           <button data-act="clear" ${this.rows.length ? "" : "disabled"}>Clear</button>
         </span>
@@ -276,7 +313,9 @@ class Results {
             const btn = e.target.closest("[data-act]");
             if (btn) {
                 e.stopPropagation();
-                if (btn.dataset.act === "refresh") this.refresh();
+                const act = btn.dataset.act;
+                if (act === "gear") this.toggleSettings();
+                else if (act === "refresh") this.refresh();
                 else this.clear();
                 return;
             }
@@ -333,7 +372,24 @@ app.registerExtension({
             debounceOn("query", (v) => ui.search(v), 1000);
             debounceOn("mode", () => { ui.lastKey = ""; ui.refresh(); }, 0);
 
-            this.size = [340, 480];
+            // A multiline STRING grows to whatever the frontend thinks it needs,
+            // which on this node meant a six-row textarea above a three-row
+            // grid. Two rows, then it scrolls — the query is nearly always one
+            // line, and the results are what the node is for.
+            const query = this.widgets.find((w) => w.name === "query");
+            if (query) {
+                query.computeLayoutSize = () => ({ minHeight: QUERY_H, minWidth: 200 });
+                const el = query.element || query.inputEl;
+                if (el) {
+                    el.style.height = `${QUERY_H}px`;
+                    el.style.maxHeight = `${QUERY_H}px`;
+                    el.style.overflowY = "auto";
+                    el.style.resize = "none";
+                }
+            }
+
+            ui.applySettings();   // start collapsed
+            this.size = [340, 460];
             this.serialize_widgets = true;
         };
 
