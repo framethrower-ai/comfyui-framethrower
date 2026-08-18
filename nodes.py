@@ -212,6 +212,11 @@ class FrameThrowerReference:
                 # a widget rather than node state so it survives save/load and
                 # travels with an exported workflow.
                 "pinned": ("STRING", {"default": "", "multiline": False}),
+                # The filter bar's choices, as JSON. A widget rather than node
+                # properties because properties never reach Python — the grid
+                # would show filtered results and a queued graph would search
+                # without them, which is the same node giving two answers.
+                "filters": ("STRING", {"default": "", "multiline": False}),
             },
             "optional": {
                 "query_in": ("STRING", {"forceInput": True}),
@@ -264,7 +269,7 @@ class FrameThrowerReference:
     DESCRIPTION = "FT / FrameThrower reference frames. Search the film-still library and output the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
 
     @classmethod
-    def IS_CHANGED(cls, query, mode, index, pinned, query_in=None, image_in=None, prompt=None, unique_id=None):
+    def IS_CHANGED(cls, query, mode, index, pinned, filters="", query_in=None, image_in=None, prompt=None, unique_id=None):
         # Without this the node re-searches on every queue, and a search costs
         # credits. Hash the inputs so an unchanged node is a cache hit. The
         # connected outputs are part of the hash: wiring depth up has to
@@ -279,10 +284,10 @@ class FrameThrowerReference:
                 img = hashlib.sha256(image_in[0].cpu().numpy().tobytes()).hexdigest()[:16]
             except Exception:
                 img = "image"
-        blob = f"{query_in or query}|{mode}|{index}|{pinned}|{wanted}|{img}"
+        blob = f"{query_in or query}|{mode}|{index}|{pinned}|{filters}|{wanted}|{img}"
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-    def fetch(self, query, mode, index, pinned, query_in=None, image_in=None, prompt=None, unique_id=None):
+    def fetch(self, query, mode, index, pinned, filters="", query_in=None, image_in=None, prompt=None, unique_id=None):
         row = None
 
         # A frame clicked in the grid wins over the query — you looked at it and
@@ -313,7 +318,11 @@ class FrameThrowerReference:
                     "query_in, wire an image into image_in, or click a frame in "
                     "the node's grid."
                 )
-            results = ft_api.search(text, limit=min(index + 1, 50), mode=mode)
+            try:
+                chosen = json.loads(filters) if filters else {}
+            except json.JSONDecodeError:
+                chosen = {}
+            results = ft_api.search(text, limit=min(index + 1, 50), mode=mode, filters=chosen)
             if not results:
                 raise ValueError(f'No frames found for "{text}".')
             if index >= len(results):

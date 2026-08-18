@@ -115,7 +115,7 @@ function installDropHandler() {
 }
 
 /** Every native widget, so they can all be hidden in one pass. */
-const NATIVE = ["query", "mode", "index", "pinned"];
+const NATIVE = ["query", "mode", "index", "pinned", "filters"];
 
 // v1 takes hybrid and description. "semantic" is accepted but deprecated —
 // it is served as hybrid — so offering it would be offering the same thing
@@ -306,6 +306,7 @@ const CSS = `
 .ft-stat { display:flex; align-items:center; min-width:0; font-size:9.5px;
   color:var(--ft-dim); white-space:nowrap; }
 .ft-stat b { color:var(--ft-fg); font-weight:500; overflow:hidden; text-overflow:ellipsis; }
+.ft-via { color:var(--ft-on); cursor:help; border-bottom:1px dotted currentColor; }
 .ft-undo { display:inline-flex; vertical-align:-1px; margin-left:4px; padding:1px;
   border:none; border-radius:2px; background:transparent; color:var(--ft-dim);
   cursor:pointer; }
@@ -368,6 +369,7 @@ class ReferenceBody {
         this.mirrored = null;     // last text seen on the query_in wire
         this.filtersOpen = false;
         this.likeOf = null;      // the frame we are searching 'more like this' from
+        this.enhanced = null;    // the rewritten query, when smart search fired
         this.watch = null;
         this.connError = null;
         this.connStep = null;   // null | "paste" | "code"
@@ -410,6 +412,9 @@ class ReferenceBody {
         const next = { ...this.filters };
         if (value) next[key] = value; else delete next[key];
         this.node.properties.ftFilters = next;
+        // Mirrored into the hidden widget so the executing graph filters the
+        // same way the grid does.
+        this.set("filters", Object.keys(next).length ? JSON.stringify(next) : "");
         this.lastKey = "";          // same words, different question
         this.search();
     }
@@ -658,10 +663,16 @@ class ReferenceBody {
         const startedAt = performance.now();
         try {
             const data = await this.post({
-                query: q, limit: PAGE_SIZE, mode,
+                // Later pages search the rewritten query with enhancement off:
+                // re-rewriting could return something slightly different and
+                // page two would rank in another neighbourhood than page one.
+                query: append && this.enhanced ? this.enhanced : q,
+                enhance: !append,
+                limit: PAGE_SIZE, mode,
                 offset: append ? this.rows.length : 0,
                 ...this.filters,
             });
+            if (!append) this.enhanced = data.enhancedQuery || null;
             const rows = data.results || [];
             if (append) {
                 // The vector index can return the same frame in overlapping
@@ -830,7 +841,14 @@ class ReferenceBody {
         if (this.likeOf) {
             return `Like <b>${esc(this.likeOf.filmTitle || "that frame")}</b>${undo("unlike", "Back to the text search")}`;
         }
-        if (this.rows.length) return `${this.rows.length} frames · click one to use it`;
+        if (this.rows.length) {
+            // Named, not hidden: the results answer the rewritten sentence, and
+            // a search you cannot see is one you cannot correct.
+            const via = this.enhanced
+                ? ` · <span class="ft-via" title="Smart search rewrote your words to match how the frames were described: ${esc(this.enhanced)}">smart</span>`
+                : "";
+            return `${this.rows.length} frames${via} · click one to use it`;
+        }
         return this.driven ? "query_in" : "";
     }
 
@@ -968,6 +986,7 @@ class ReferenceBody {
                     this.render();
                 } else if (act === "clearfilters") {
                     this.node.properties.ftFilters = {};
+                    this.set("filters", "");
                     this.lastKey = "";
                     this.search();
                 } else if (act === "browser") {

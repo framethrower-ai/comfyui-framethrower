@@ -84,6 +84,11 @@ def _post(path, payload, token=None, base=None, timeout=60):
         raise FrameThrowerError(f"Could not reach {base}: {exc.reason}") from exc
 
 
+# Smart search, on by default, because it is what framethrower.ai does and the
+# node should return the same references as the website for the same words.
+# Frames were embedded from full VLM sentences and people type fragments;
+# benchmarked recall@10 is 0.72 raw against 0.88 rewritten.
+#
 # The most /api/v1/search returns in one call. Paging past it is what `offset`
 # is for; v1 caps that at 500, so 500 frames is the deepest a query can go.
 MAX_LIMIT = 50
@@ -123,7 +128,7 @@ def _row(r):
     }
 
 
-def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None):
+def search_full(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, enhance=True):
     """Text search against the public, per-account API.
 
     /api/external/* was the wrong door: it checks one shared EXTERNAL_API_TOKEN
@@ -132,18 +137,26 @@ def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None):
     it, and bills the right account — which is the whole point of signing in.
     """
     if not query or not query.strip():
-        return []
+        return [], {}
     payload = {
         "query": query.strip(),
         "limit": min(int(limit), MAX_LIMIT),
         "mode": mode,
         "offset": max(0, min(int(offset), MAX_OFFSET)),
     }
+    if enhance:
+        payload["enhance"] = True
     for key, value in (filters or {}).items():
         if key in FILTER_KEYS and value not in (None, "", []):
             payload[key] = value
     data = _post("/api/v1/search", payload)
-    return [_row(r) for r in (data.get("data") or [])]
+    return [_row(r) for r in (data.get("data") or [])], (data.get("meta") or {})
+
+
+def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, enhance=True):
+    """Rows only, for callers that do not care how the query was rewritten."""
+    rows, _ = search_full(query, limit, mode, offset, filters, enhance)
+    return rows
 
 
 def search_by_image(image_url):
@@ -233,15 +246,22 @@ try:
                 return _web.json_response({"results": results, "exhausted": True})
             limit = int(body.get("limit", MAX_LIMIT))
             offset = int(body.get("offset", 0))
-            results = search(
+            results, meta = search_full(
                 body.get("query", ""), limit=limit,
                 mode=body.get("mode", "hybrid"), offset=offset,
                 filters={k: body[k] for k in FILTER_KEYS if k in body},
+                enhance=bool(body.get("enhance", True)),
             )
             # Exhausted when the page came back short, or when the next page
             # would start past what v1 will rank.
             exhausted = len(results) < limit or (offset + limit) >= MAX_OFFSET
-            return _web.json_response({"results": results, "exhausted": exhausted})
+            return _web.json_response({
+                "results": results,
+                "exhausted": exhausted,
+                # So the grid can page against the same rewritten query rather
+                # than drifting back to the raw one on page two.
+                "enhancedQuery": meta.get("enhancedQuery"),
+            })
         except FrameThrowerError as exc:
             return _web.json_response({"error": str(exc)}, status=502)
         except Exception as exc:  # noqa: BLE001 - surface anything to the node UI
