@@ -115,7 +115,7 @@ function installDropHandler() {
 }
 
 /** Every native widget, so they can all be hidden in one pass. */
-const NATIVE = ["query", "mode", "index", "pinned", "filters"];
+const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart"];
 
 // v1 takes hybrid and description. "semantic" is accepted but deprecated —
 // it is served as hybrid — so offering it would be offering the same thing
@@ -306,7 +306,11 @@ const CSS = `
 .ft-stat { display:flex; align-items:center; min-width:0; font-size:9.5px;
   color:var(--ft-dim); white-space:nowrap; }
 .ft-stat b { color:var(--ft-fg); font-weight:500; overflow:hidden; text-overflow:ellipsis; }
-.ft-via { color:var(--ft-on); cursor:help; border-bottom:1px dotted currentColor; }
+.ft-smart.on { color:var(--ft-on); }
+/* An enabled toggle keeps its colour on hover: the generic .ft-acts hover
+   rule is more specific, so without this, pointing at a switch that is on
+   makes it look off. */
+.ft-acts button.ft-smart.on:hover, .ft-acts button.ft-funnel.on:hover { color:var(--ft-on); }
 .ft-undo { display:inline-flex; vertical-align:-1px; margin-left:4px; padding:1px;
   border:none; border-radius:2px; background:transparent; color:var(--ft-dim);
   cursor:pointer; }
@@ -335,6 +339,7 @@ const ICON = {
     search: SVG('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'),
     refresh: SVG('<path d="M21 12a9 9 0 0 0-9-9 9.8 9.8 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.8 9.8 0 0 0 6.7-2.7L21 16"/><path d="M16 16h5v5"/>'),
     x: SVG('<path d="M18 6 6 18M6 6l12 12"/>'),
+    spark: SVG('<path d="M12 3v3.2M12 17.8V21M3 12h3.2M17.8 12H21M5.6 5.6l2.3 2.3M16.1 16.1l2.3 2.3M18.4 5.6l-2.3 2.3M7.9 16.1l-2.3 2.3"/><circle cx="12" cy="12" r="2.8"/>'),
     funnel: SVG('<path d="M22 3H2l8 9.5V19l4 2v-8.5L22 3Z"/>'),
     eye: SVG('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
 };
@@ -563,6 +568,16 @@ class ReferenceBody {
         setTimeout(tick, 3000);
     }
 
+    /** What the Smart button says on hover — including the sentence actually
+     *  searched, which is the detail worth having and costs no layout here. */
+    smartTitle() {
+        if (this.get("smart") === false) {
+            return "Smart search off — your words are searched exactly as typed. Right for a title, a line of dialogue, or a term to match literally.";
+        }
+        if (this.enhanced) return `Smart search on. Searched as: ${this.enhanced}`;
+        return "Smart search on — your words are rewritten into the register the frames were described in, which finds more of them.";
+    }
+
     /** Minutes and seconds left on the current code, or nothing if unknown. */
     pairLeft() {
         if (!this.pairExpires) return "";
@@ -667,7 +682,7 @@ class ReferenceBody {
                 // re-rewriting could return something slightly different and
                 // page two would rank in another neighbourhood than page one.
                 query: append && this.enhanced ? this.enhanced : q,
-                enhance: !append,
+                enhance: this.get("smart") !== false && !append,
                 limit: PAGE_SIZE, mode,
                 offset: append ? this.rows.length : 0,
                 ...this.filters,
@@ -841,14 +856,11 @@ class ReferenceBody {
         if (this.likeOf) {
             return `Like <b>${esc(this.likeOf.filmTitle || "that frame")}</b>${undo("unlike", "Back to the text search")}`;
         }
-        if (this.rows.length) {
-            // Named, not hidden: the results answer the rewritten sentence, and
-            // a search you cannot see is one you cannot correct.
-            const via = this.enhanced
-                ? ` · <span class="ft-via" title="Smart search rewrote your words to match how the frames were described: ${esc(this.enhanced)}">smart</span>`
-                : "";
-            return `${this.rows.length} frames${via} · click one to use it`;
-        }
+        // The rewrite is reported by the button that controls it, not here. As
+        // text in this line it collided with the count — .ft-stat is a nowrap
+        // flex row, so an inline span appearing after a search had nowhere to
+        // go and sat on top of it.
+        if (this.rows.length) return `${this.rows.length} frames · click one to use it`;
         return this.driven ? "query_in" : "";
     }
 
@@ -890,6 +902,8 @@ class ReferenceBody {
         <span class="ft-acts">
           <button class="ft-funnel${this.filtersOpen || this.filterCount ? " on" : ""}" data-act="filters"
                 title="Filter by shot, angle, light, setting, style">${ICON.funnel}${this.filterCount ? `<span>${this.filterCount}</span>` : ""}</button>
+          <button class="ft-smart${this.get("smart") === false ? "" : " on"}" data-act="smart"
+                title="${esc(this.smartTitle())}">${ICON.spark}</button>
         <select class="ft-mode" title="How the library is searched">
             ${MODES.map((m) => `<option value="${m.key}"${m.key === mode ? " selected" : ""}>${m.label}</option>`).join("")}
           </select>
@@ -973,7 +987,11 @@ class ReferenceBody {
             if (btn) {
                 e.stopPropagation();
                 const act = btn.dataset.act;
-                if (act === "unpin") {
+                if (act === "smart") {
+                    this.set("smart", this.get("smart") === false);
+                    this.lastKey = "";        // same words, different question
+                    this.search();
+                } else if (act === "unpin") {
                     this.pinnedId = null;
                     this.set("pinned", "");
                     this.render();
