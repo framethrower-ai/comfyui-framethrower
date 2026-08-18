@@ -28,19 +28,12 @@ const NODE = "FrameThrowerReference";
 const PAGE_SIZE = 30;
 
 /** Every native widget, so they can all be hidden in one pass. */
-const NATIVE = ["query", "mode", "index", "depth", "pose", "lineart", "pinned"];
+const NATIVE = ["query", "mode", "index", "pinned"];
 
 const MODES = [
     { key: "hybrid", label: "Hybrid" },
     { key: "semantic", label: "Semantic" },
     { key: "description", label: "Text" },
-];
-
-/** In socket order, so each switch reads across to the output it feeds. */
-const PROCESSORS = [
-    { key: "depth", label: "Depth", hint: "Depth map (Depth Anything v2) — one fal call per frame" },
-    { key: "pose", label: "Pose", hint: "DW pose skeleton — one fal call per frame" },
-    { key: "lineart", label: "Lineart", hint: "Lineart — one fal call per frame" },
 ];
 
 const CSS = `
@@ -63,20 +56,6 @@ const CSS = `
   outline:none; cursor:pointer; }
 .ft-mode:hover { color:var(--ft-fg); }
 .ft-mode option { background:var(--comfy-menu-bg,#252525); color:var(--ft-fg); }
-
-/* one row: the three map switches */
-.ft-maps { flex:0 0 auto; display:flex; gap:2px; padding-bottom:5px; }
-.ft-map { flex:1 1 0; display:flex; align-items:center; justify-content:center; gap:5px;
-  padding:2px 4px; border:none; border-radius:3px; background:transparent;
-  color:var(--ft-dim); font:inherit; font-size:10px; cursor:pointer; }
-.ft-map:hover { color:var(--ft-fg); }
-.ft-map.on { color:var(--ft-fg); }
-.ft-sw { position:relative; flex:0 0 auto; width:20px; height:11px; border-radius:6px;
-  background:var(--ft-line); transition:background .15s; }
-.ft-sw::after { content:""; position:absolute; top:2px; left:2px; width:7px; height:7px;
-  border-radius:50%; background:var(--ft-dim); transition:left .15s,background .15s; }
-.ft-map.on .ft-sw { background:var(--ft-on); }
-.ft-map.on .ft-sw::after { left:11px; background:var(--p-primary-contrast-color,#fff); }
 
 /* the references field — the only framed element, and the only one that grows */
 .ft-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; padding:3px;
@@ -347,10 +326,6 @@ class ReferenceBody {
           ${MODES.map((m) => `<option value="${m.key}"${m.key === mode ? " selected" : ""}>${m.label}</option>`).join("")}
         </select>
       </div>
-      <div class="ft-maps">${PROCESSORS.map(
-            (p) => `<button class="ft-map${this.get(p.key) ? " on" : ""}" data-proc="${p.key}"
-                  title="${p.hint}"><span class="ft-sw"></span>${p.label}</button>`
-        ).join("")}</div>
       ${this.progress > 0 ? `<div class="ft-bar"><i style="width:${this.progress}%"></i></div>` : ""}
       <div class="ft-scroll">${this.body()}</div>
       <div class="ft-foot">
@@ -411,14 +386,6 @@ class ReferenceBody {
                 e.stopPropagation();
                 if (btn.dataset.act === "refresh") { this.lastKey = ""; this.done = false; this.search(); }
                 else this.clear();
-                return;
-            }
-            const proc = e.target.closest("[data-proc]");
-            if (proc) {
-                e.stopPropagation();
-                const k = proc.dataset.proc;
-                this.set(k, !this.get(k));
-                this.render();
                 return;
             }
             const cell = e.target.closest(".ft-cell");

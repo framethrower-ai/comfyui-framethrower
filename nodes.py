@@ -114,6 +114,46 @@ def _fal_process(image_url, want_depth, want_pose, want_lineart):
     return out
 
 
+#: Output socket order, so a connection can be mapped back to a processor.
+OUT_IMAGE, OUT_PROMPT, OUT_CREDIT, OUT_DEPTH, OUT_POSE, OUT_LINEART = range(6)
+
+
+def _connected_outputs(prompt, unique_id):
+    """Which of this node's output sockets something downstream actually reads.
+
+    There used to be three toggles for depth / pose / lineart, and they were the
+    wrong control: wiring the depth socket did nothing unless you also found and
+    flipped a switch, so a visible connection could silently produce a black
+    image. The graph already states the intent — if nobody consumes the socket,
+    nobody wants the picture — so the graph decides.
+
+    In an executing prompt every input is either a literal or a link expressed
+    as [source_node_id, output_index]. Anything pointing back at us marks that
+    output as wanted.
+
+    Returns None when the graph is unavailable, which the caller treats as
+    "run nothing": a missing graph must not silently bill for three processors.
+    """
+    if not prompt or unique_id is None:
+        return None
+    me = str(unique_id)
+    used = set()
+    try:
+        for node in prompt.values():
+            for value in (node.get("inputs") or {}).values():
+                if (
+                    isinstance(value, (list, tuple))
+                    and len(value) == 2
+                    and str(value[0]) == me
+                    and isinstance(value[1], int)
+                ):
+                    used.add(value[1])
+    except Exception as exc:  # noqa: BLE001 — a malformed graph is not fatal
+        print(f"[FrameThrower] could not read the graph: {exc}")
+        return None
+    return used
+
+
 class FrameThrowerReference:
     """Search the FrameThrower library and pull a frame into the graph."""
 
@@ -124,9 +164,6 @@ class FrameThrowerReference:
                 "query": ("STRING", {"multiline": True, "default": "", "placeholder": "neon rain at night"}),
                 "mode": (MODES, {"default": "hybrid"}),
                 "index": ("INT", {"default": 0, "min": 0, "max": 499, "step": 1}),
-                "depth": ("BOOLEAN", {"default": False, "label_on": "Depth map", "label_off": "Depth map"}),
-                "pose": ("BOOLEAN", {"default": False, "label_on": "DW pose", "label_off": "DW pose"}),
-                "lineart": ("BOOLEAN", {"default": False, "label_on": "Lineart", "label_off": "Lineart"}),
                 # Written by the node's own grid when you click a frame. Kept as
                 # a widget rather than node state so it survives save/load and
                 # travels with an exported workflow.
@@ -135,6 +172,9 @@ class FrameThrowerReference:
             "optional": {
                 "query_in": ("STRING", {"forceInput": True}),
             },
+            # The graph itself, so the node can see which of its outputs anyone
+            # is actually using. See _connected_outputs.
+            "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE", "IMAGE", "IMAGE")
@@ -144,13 +184,17 @@ class FrameThrowerReference:
     DESCRIPTION = "FT / FrameThrower reference frames. Search the film-still library and output the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
 
     @classmethod
-    def IS_CHANGED(cls, query, mode, index, depth, pose, lineart, pinned, query_in=None):
+    def IS_CHANGED(cls, query, mode, index, pinned, query_in=None, prompt=None, unique_id=None):
         # Without this the node re-searches on every queue, and a search costs
-        # credits. Hash the inputs so an unchanged node is a cache hit.
-        blob = f"{query_in or query}|{mode}|{index}|{depth}|{pose}|{lineart}|{pinned}"
+        # credits. Hash the inputs so an unchanged node is a cache hit. The
+        # connected outputs are part of the hash: wiring depth up has to
+        # re-run the node, or the socket would stay black until something else
+        # happened to invalidate the cache.
+        wanted = sorted(_connected_outputs(prompt, unique_id) or [])
+        blob = f"{query_in or query}|{mode}|{index}|{pinned}|{wanted}"
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-    def fetch(self, query, mode, index, depth, pose, lineart, pinned, query_in=None):
+    def fetch(self, query, mode, index, pinned, query_in=None, prompt=None, unique_id=None):
         row = None
 
         # A frame clicked in the grid wins over the query — you looked at it and
@@ -181,7 +225,9 @@ class FrameThrowerReference:
         prompt = row.get("description") or ""
         credit = _credit(row)
 
-        maps = _fal_process(full, depth, pose, lineart)
+        # Run a processor only if something downstream is reading its socket.
+        wanted = _connected_outputs(prompt, unique_id) or set()
+        maps = _fal_process(full, OUT_DEPTH in wanted, OUT_POSE in wanted, OUT_LINEART in wanted)
         return (
             image,
             prompt,

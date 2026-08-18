@@ -38,11 +38,13 @@ Clear (the eraser) empties the node. It leaves the query alone, so results come 
 | `image` | the frame |
 | `prompt` | the scene description — wire straight into CLIP Text Encode |
 | `credit` | `Blade Runner (1982) — dir. Ridley Scott` |
-| `depth` | depth map, if the toggle is on |
-| `pose` | DW pose skeleton, if the toggle is on |
-| `lineart` | lineart, if the toggle is on |
+| `depth` | depth map |
+| `pose` | DW pose skeleton |
+| `lineart` | lineart |
 
-The three processors are off by default and need a `FAL_KEY`, because each one is a real charge per image. A toggle that is off outputs a single black pixel rather than nothing — Comfy has no null on an `IMAGE` socket, and one black pixel fails loudly instead of silently passing the wrong picture downstream.
+**The last three run only if you wire them.** There is no toggle: the node reads the executing graph and runs a processor when something downstream is reading that socket. Each one is a real charge per image (roughly $0.0007 for depth), so the wire you can see is the only thing that spends money — no hidden switch that leaves a connected socket black.
+
+They need a `FAL_KEY`. Unwired, a socket outputs a single black pixel rather than nothing: Comfy has no null on an `IMAGE` socket, and one black pixel fails loudly instead of silently passing the wrong picture downstream.
 
 ## Search modes
 
