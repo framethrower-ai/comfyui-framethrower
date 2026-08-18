@@ -151,6 +151,16 @@ const ICON = {
     x: SVG('<path d="M18 6 6 18M6 6l12 12"/>'),
 };
 
+/** Zero-based on the wire, human-readable on the face: index 0 is the top hit,
+ *  which is not what "0" says to anyone reading it. */
+function ordinal(n) {
+    if (n === 0) return "The";
+    const m = n + 1;                       // the suffix belongs to what is shown
+    const t = m % 100;
+    const s = t >= 11 && t <= 13 ? "th" : { 1: "st", 2: "nd", 3: "rd" }[m % 10] || "th";
+    return `The ${m}${s}`;
+}
+
 const esc = (s) =>
     String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -324,9 +334,9 @@ class ReferenceBody {
         // control in two places is a control you can disagree with itself.
         return `<div class="ft-set">
       <div class="ft-row"><span class="ft-lbl">Search</span><span class="ft-pills">${pills}</span></div>
-      <div class="ft-row"><span class="ft-lbl">Index</span>
+      <div class="ft-row"><span class="ft-lbl">Result</span>
         <input class="ft-num" type="number" min="0" max="499" value="${Number(this.get("index") ?? 0)}"/>
-        <span class="ft-hint">Which result to use when query_in is wired and nothing is selected.</span>
+        <span class="ft-hint">${ordinal(Number(this.get("index") ?? 0))} best match. Ignored once you click a frame.</span>
       </div>
     </div>`;
     }
@@ -416,7 +426,10 @@ class ReferenceBody {
         }
 
         const num = this.root.querySelector(".ft-num");
-        if (num) num.onchange = () => this.set("index", Math.max(0, Math.min(499, Number(num.value) || 0)));
+        if (num) num.oninput = () => {
+            this.set("index", Math.max(0, Math.min(499, Number(num.value) || 0)));
+            this.render();   // the hint reads back what the number means
+        };
 
         // Drives a CSS variable rather than re-rendering: a re-render per slider
         // step would rebuild every <img> and make the grid flash while dragging.
