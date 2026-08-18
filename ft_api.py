@@ -145,8 +145,54 @@ try:
                 "configured": bool(cfg["token"]),
                 "baseUrl": cfg["base_url"],
                 "fal": bool(cfg["fal_key"]),
+                # An env-supplied token cannot be replaced from the UI — writing
+                # config.json would have no effect while the variable is set,
+                # and silently doing nothing is worse than saying so.
+                "fromEnv": bool(os.environ.get("FT_API_TOKEN")),
+                "connectUrl": f"{cfg['base_url']}/settings?tab=api",
             }
         )
+
+    @_routes.post("/framethrower/connect")
+    async def _route_connect(request):
+        """Save a token from the node's Connect panel.
+
+        Verified before it is written: a token that is wrong should fail here,
+        in front of the person who just pasted it, rather than later inside a
+        queued graph where the error reads as a broken node.
+        """
+        try:
+            token = (await request.json()).get("token", "").strip()
+        except Exception:
+            return _web.json_response({"error": "Bad request"}, status=400)
+        if not token:
+            return _web.json_response({"error": "Paste a token first."}, status=400)
+        if os.environ.get("FT_API_TOKEN"):
+            return _web.json_response(
+                {"error": "FT_API_TOKEN is set in the environment and overrides anything saved here. Unset it first."},
+                status=409,
+            )
+        try:
+            _post("/api/external/search", {"query": "test", "limit": 1}, token=token)
+        except FrameThrowerError as exc:
+            return _web.json_response({"error": str(exc)}, status=401)
+
+        cfg = {}
+        if os.path.isfile(CONFIG_PATH):
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                    cfg = json.load(fh)
+            except Exception:
+                cfg = {}
+        cfg["token"] = token
+        cfg.setdefault("base_url", DEFAULT_BASE)
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, indent=2)
+            os.chmod(CONFIG_PATH, 0o600)   # a credential, not a settings file
+        except OSError as exc:
+            return _web.json_response({"error": f"Could not write config.json: {exc}"}, status=500)
+        return _web.json_response({"ok": True})
 
 except Exception as exc:  # noqa: BLE001
     print(f"[FrameThrower] UI routes not registered ({type(exc).__name__}: {exc})")

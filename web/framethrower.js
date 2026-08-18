@@ -27,6 +27,9 @@ import { api } from "../../scripts/api.js";
 const NODE = "FrameThrowerReference";
 const PAGE_SIZE = 30;
 
+/** One /status request per page load, shared by every node on the canvas. */
+let statusPromise = null;
+
 /** Every native widget, so they can all be hidden in one pass. */
 const NATIVE = ["query", "mode", "index", "pinned"];
 
@@ -70,6 +73,15 @@ const CSS = `
 .ft-cell:hover { box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.6); }
 .ft-cell.on { box-shadow:inset 0 0 0 2px var(--ft-on); }
 .ft-cell img { width:100%; height:100%; object-fit:cover; display:block; }
+/* A frame whose picture will not load. The browser's broken-image glyph is
+   worse than useless inside a grid of pictures — it reads as a bug in the node
+   rather than one unreachable file — so the cell keeps the title instead. */
+.ft-bad { display:none; }
+.ft-cell.bad { background:var(--comfy-input-bg,#1a1a1a); }
+.ft-cell.bad .ft-bad { display:flex; align-items:center; justify-content:center;
+  height:100%; padding:3px; text-align:center; font-size:7.5px; line-height:1.2;
+  color:var(--ft-dim); opacity:.7; overflow:hidden; }
+.ft-cell.bad .ft-cap { display:none; }
 .ft-cap { position:absolute; left:0; right:0; bottom:0; padding:2px 4px; opacity:0;
   transition:opacity .12s; pointer-events:none;
   background:linear-gradient(to top,rgba(0,0,0,.88),transparent); }
@@ -81,6 +93,21 @@ const CSS = `
 .ft-msg { display:flex; align-items:center; justify-content:center; height:100%; min-height:60px;
   padding:14px; text-align:center; font-size:10.5px; color:var(--ft-dim); line-height:1.5; }
 .ft-msg.err { color:var(--error-text,#f87171); }
+
+/* the connect panel, shown in place of results until there is a token */
+.ft-conn { display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:7px; height:100%; min-height:90px; padding:14px; text-align:center; }
+.ft-conn p { margin:0; font-size:10.5px; color:var(--ft-dim); line-height:1.5; max-width:230px; }
+.ft-conn .ft-go { padding:5px 12px; border:none; border-radius:3px; background:var(--ft-on);
+  color:var(--p-primary-contrast-color,#fff); font:inherit; font-size:11px; cursor:pointer; }
+.ft-conn .ft-go:hover { filter:brightness(1.1); }
+.ft-paste { display:flex; gap:4px; width:100%; max-width:250px; }
+.ft-paste input { flex:1 1 auto; min-width:0; padding:4px 6px; border:1px solid var(--ft-line);
+  border-radius:3px; background:transparent; color:var(--ft-fg); font:inherit; font-size:10px;
+  outline:none; }
+.ft-paste button { padding:4px 9px; border:1px solid var(--ft-line); border-radius:3px;
+  background:transparent; color:var(--ft-fg); font:inherit; font-size:10px; cursor:pointer; }
+.ft-paste button:hover { border-color:var(--ft-on); }
 .ft-more { padding:5px 0; text-align:center; font-size:9px; color:var(--ft-dim); opacity:.7; }
 
 /* one row: what is selected, and what you can do about it */
@@ -142,6 +169,8 @@ class ReferenceBody {
         this.lastKey = "";
         this.timer = null;
         this.debounce = null;
+        this.status_ = null;      // null until /status answers; then {configured,…}
+        this.connError = null;
 
         this.root = document.createElement("div");
         this.root.className = "ft";
@@ -151,6 +180,7 @@ class ReferenceBody {
             this.root.addEventListener(ev, (e) => e.stopPropagation());
         }
         this.render();
+        this.checkStatus();
     }
 
     // ── native widgets are the source of truth; these are the only accessors ──
@@ -181,6 +211,38 @@ class ReferenceBody {
     /** True when something is wired into query_in, which overrides the box. */
     get driven() {
         return Boolean(this.node.inputs?.find((i) => i.name === "query_in")?.link != null);
+    }
+
+    /** Asked once per node, and again after a successful connect. Shared across
+     *  nodes via a module-level promise so ten nodes on a canvas do not make
+     *  ten identical requests on load. */
+    async checkStatus({ fresh = false } = {}) {
+        if (fresh) statusPromise = null;
+        statusPromise = statusPromise || api.fetchApi("/framethrower/status").then((r) => r.json());
+        try {
+            this.status_ = await statusPromise;
+        } catch {
+            this.status_ = { configured: false };
+        }
+        this.render();
+    }
+
+    async connect(token) {
+        this.connError = null;
+        try {
+            const res = await api.fetchApi("/framethrower/connect", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `Could not save (${res.status})`);
+            await this.checkStatus({ fresh: true });
+            if (this.get("query")) this.search();
+        } catch (e) {
+            this.connError = e.message;
+            this.render();
+        }
     }
 
     // ── search ───────────────────────────────────────────────────────────────
@@ -276,7 +338,24 @@ class ReferenceBody {
     }
 
     // ── view ─────────────────────────────────────────────────────────────────
+    /** Shown instead of results until the server has a token. Two doors: open
+     *  the tokens page, or paste one straight in. The paste field is not a
+     *  fallback — on a ComfyUI running anywhere but this machine, opening a
+     *  browser tab from the node is meaningless, and pasting is the only way. */
+    connectPanel() {
+        return `<div class="ft-conn">
+      <p>Sign in to FrameThrower to search the library. Free account, no card.</p>
+      <button class="ft-go" data-act="open">Connect to account</button>
+      <div class="ft-paste">
+        <input type="password" placeholder="or paste a token: ft_…" spellcheck="false"/>
+        <button data-act="save">Save</button>
+      </div>
+      ${this.connError ? `<p style="color:var(--error-text,#f87171)">${esc(this.connError)}</p>` : ""}
+    </div>`;
+    }
+
     body() {
+        if (this.status_ && !this.status_.configured) return this.connectPanel();
         if (this.error) return `<div class="ft-msg err">${esc(this.error)}</div>`;
         if (this.loading && !this.rows.length) return `<div class="ft-msg">Searching…</div>`;
         if (!this.rows.length) {
@@ -287,7 +366,10 @@ class ReferenceBody {
         const cells = this.rows
             .map(
                 (r, i) => `<div class="ft-cell${r.id === this.pinnedId ? " on" : ""}" data-i="${i}">
-        <img src="${esc(r.src)}" alt="" loading="lazy" draggable="false"/>
+        <img src="${esc(r.src)}" alt="" loading="lazy" draggable="false"
+             referrerpolicy="no-referrer"
+             onerror="this.closest('.ft-cell').classList.add('bad');this.remove()"/>
+        <span class="ft-bad">${esc(r.filmTitle || "unavailable")}</span>
         ${r.filmTitle || r.director
                         ? `<div class="ft-cap">${r.filmTitle ? `<b>${esc(r.filmTitle)}</b>` : ""}${r.director ? `<i>${esc(r.director)}</i>` : ""}</div>`
                         : ""}
@@ -322,15 +404,15 @@ class ReferenceBody {
         <input type="text" spellcheck="false"
                placeholder="${this.driven ? "driven by query_in" : "neon rain at night"}"
                value="${esc(this.get("query") || "")}" ${this.driven ? "disabled" : ""}/>
-        <select class="ft-mode" title="How the library is searched">
-          ${MODES.map((m) => `<option value="${m.key}"${m.key === mode ? " selected" : ""}>${m.label}</option>`).join("")}
-        </select>
       </div>
       ${this.progress > 0 ? `<div class="ft-bar"><i style="width:${this.progress}%"></i></div>` : ""}
       <div class="ft-scroll">${this.body()}</div>
       <div class="ft-foot">
         <span class="ft-stat">${this.status()}</span>
         <span class="ft-acts">
+          <select class="ft-mode" title="How the library is searched">
+            ${MODES.map((m) => `<option value="${m.key}"${m.key === mode ? " selected" : ""}>${m.label}</option>`).join("")}
+          </select>
           <input class="ft-size" type="range" min="56" max="220" step="4"
                  value="${this.thumb}" title="Thumbnail size"/>
           <button data-act="refresh" title="Search again">${ICON.refresh}</button>
@@ -358,6 +440,11 @@ class ReferenceBody {
             };
         }
 
+        const paste = this.root.querySelector(".ft-paste input");
+        if (paste) paste.onkeydown = (e) => {
+            if (e.key === "Enter") this.connect(paste.value.trim());
+        };
+
         const sel = this.root.querySelector(".ft-mode");
         if (sel) sel.onchange = () => { this.set("mode", sel.value); this.lastKey = ""; this.search(); };
 
@@ -384,8 +471,17 @@ class ReferenceBody {
             const btn = e.target.closest("[data-act]");
             if (btn) {
                 e.stopPropagation();
-                if (btn.dataset.act === "refresh") { this.lastKey = ""; this.done = false; this.search(); }
-                else this.clear();
+                const act = btn.dataset.act;
+                if (act === "open") {
+                    window.open(this.status_?.connectUrl || "https://framethrower.ai/settings?tab=api", "_blank", "noopener");
+                } else if (act === "save") {
+                    const f = this.root.querySelector(".ft-paste input");
+                    if (f) this.connect(f.value.trim());
+                } else if (act === "refresh") {
+                    // Also the way back from a connect that failed.
+                    if (!this.status_?.configured) this.checkStatus({ fresh: true });
+                    else { this.lastKey = ""; this.done = false; this.search(); }
+                } else this.clear();
                 return;
             }
             const cell = e.target.closest(".ft-cell");
