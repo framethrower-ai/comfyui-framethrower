@@ -32,6 +32,20 @@ const PAGE_SIZE = 50;
 /** One /status request per page load, shared by every node on the canvas. */
 let statusPromise = null;
 
+/**
+ * How long a search takes, learned rather than assumed.
+ *
+ * Measured here: 3.1s on the first call of a session, then 1.0–1.2s once
+ * Qdrant and the embedder are warm — and both numbers move with the machine and
+ * the connection. A fixed duration is wrong for somebody every time, so the
+ * fill aims at a rolling average of what this install actually sees, seeded at
+ * two seconds and weighted toward recent searches.
+ */
+let searchMs = 2000;
+const rememberSearchMs = (ms) => {
+    if (ms > 200 && ms < 30000) searchMs = Math.round(searchMs * 0.6 + ms * 0.4);
+};
+
 /** The frame currently being dragged out of some node's grid, if any. */
 let dragging = null;
 
@@ -155,8 +169,18 @@ const CSS = `
   color:var(--ft-fg); font-size:11px; font-weight:400;
   font-family:'Outfit FT','Outfit',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
 
-/* one row: search box and the mode it searches in */
-.ft-search { flex:0 0 auto; display:flex; align-items:center; gap:6px; padding:0 2px 6px; }
+/* one row: search box and the mode it searches in. The loading fill lives
+   here rather than on a separate hairline — the thing you are waiting on is
+   the query, so the progress belongs in the box you typed it into. */
+.ft-search { position:relative; flex:0 0 auto; display:flex; align-items:center; gap:6px;
+  margin-bottom:6px; padding:4px 6px; border-radius:4px; overflow:hidden;
+  background:var(--comfy-input-bg,#1a1a1a); border:1px solid var(--ft-line); }
+.ft-search:focus-within { border-color:var(--ft-on); }
+.ft-load { position:absolute; left:0; top:0; bottom:0; width:0; pointer-events:none;
+  background:linear-gradient(90deg, rgba(37,99,235,.05), rgba(37,99,235,.30));
+  background-color:color-mix(in srgb, var(--ft-on) 22%, transparent);
+  transition:width .12s linear; }
+.ft-search > *:not(.ft-load) { position:relative; z-index:1; }
 .ft-search > svg { width:12px; height:12px; color:var(--ft-dim); flex:0 0 auto; }
 .ft-search input { flex:1 1 auto; min-width:0; border:none; outline:none; background:transparent;
   color:var(--ft-fg); font:inherit; font-size:11.5px; padding:2px 0; }
@@ -279,9 +303,14 @@ const CSS = `
 .ft-link.up:hover { background:rgba(63,185,80,.12); }
 .ft-link.down { color:#f85149; cursor:pointer; }
 .ft-link.down:hover { background:rgba(248,81,73,.12); }
-.ft-stat { min-width:0; font-size:9.5px; color:var(--ft-dim);
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.ft-stat b { color:var(--ft-fg); font-weight:500; }
+.ft-stat { display:flex; align-items:center; min-width:0; font-size:9.5px;
+  color:var(--ft-dim); white-space:nowrap; }
+.ft-stat b { color:var(--ft-fg); font-weight:500; overflow:hidden; text-overflow:ellipsis; }
+.ft-undo { display:inline-flex; vertical-align:-1px; margin-left:4px; padding:1px;
+  border:none; border-radius:2px; background:transparent; color:var(--ft-dim);
+  cursor:pointer; }
+.ft-undo svg { width:9px; height:9px; }
+.ft-undo:hover { color:var(--ft-fg); background:var(--p-content-hover-background,rgba(255,255,255,.12)); }
 .ft-acts { display:flex; align-items:center; gap:3px; flex:0 0 auto; }
 .ft-size { width:52px; height:12px; margin-right:2px; cursor:ew-resize;
   -webkit-appearance:none; appearance:none; background:transparent; }
@@ -295,10 +324,6 @@ const CSS = `
 .ft-acts button:disabled { opacity:.2; cursor:default; }
 .ft-acts svg { width:11px; height:11px; }
 
-/* progress: a hairline under the search row, gone when idle */
-.ft-bar { flex:0 0 auto; height:1px; margin-bottom:4px; background:var(--ft-line); }
-.ft-bar > i { display:block; height:100%; width:0; background:var(--ft-on);
-  transition:width .1s linear; }
 `;
 
 const SVG = (d) =>
@@ -578,13 +603,22 @@ class ReferenceBody {
     }
 
     // ── search ───────────────────────────────────────────────────────────────
+    /**
+     * Fill the search field while we wait.
+     *
+     * A real percentage is not available — the server does not stream progress
+     * — so this eases toward 95% over roughly how long a search takes and the
+     * response snaps it to full. Deliberately never reaching 100 on its own:
+     * a bar that sits at 100% while nothing happens is worse than one that is
+     * still visibly moving.
+     */
     tick(ms) {
         this.progress = 0;
         clearInterval(this.timer);
         const inc = 95 / (ms / 50);
         this.timer = setInterval(() => {
             this.progress = Math.min(95, this.progress + inc);
-            const bar = this.root.querySelector(".ft-bar > i");
+            const bar = this.root.querySelector(".ft-load");
             if (bar) bar.style.width = `${this.progress}%`;
         }, 50);
     }
@@ -617,10 +651,11 @@ class ReferenceBody {
             this.loading = true;
             this.error = null;
             this.done = false;
-            this.tick(3000);
+            this.tick(searchMs);
         }
         this.render();
 
+        const startedAt = performance.now();
         try {
             const data = await this.post({
                 query: q, limit: PAGE_SIZE, mode,
@@ -643,6 +678,7 @@ class ReferenceBody {
             if (append) this.done = true;   // don't hammer a failing endpoint
             else this.error = e.message;
         } finally {
+            if (!append) rememberSearchMs(performance.now() - startedAt);
             this.loading = false;
             this.more = false;
             clearInterval(this.timer);
@@ -669,7 +705,7 @@ class ReferenceBody {
         this.done = true;              // image search returns one page
         this.likeOf = row;
         this.lastKey = `like::${row.id}`;
-        this.tick(9000);
+        this.tick(searchMs * 4);   // image search is far slower
         this.render();
         try {
             const data = await this.post({ imageUrl: row.fullSrc || row.src });
@@ -780,13 +816,19 @@ class ReferenceBody {
         // before queueing — that the picture about to go downstream is the one
         // you meant — and the outline in the grid tells you which cell, not
         // which film.
+        // Both states are things you opted into and should be able to leave
+        // from where you can see them, rather than by hunting for the frame you
+        // clicked — which after scrolling may not be on screen at all.
+        const undo = (act, title) =>
+            `<button class="ft-undo" data-act="${act}" title="${title}">${ICON.x}</button>`;
+
         if (this.pinnedId) {
             const r = this.rows.find((x) => x.id === this.pinnedId);
-            if (r) return `<b>${esc(r.filmTitle || "Frame")}</b>${r.year ? ` · ${r.year}` : ""}`;
-            return "1 selected";
+            const name = r ? `<b>${esc(r.filmTitle || "Frame")}</b>${r.year ? ` · ${r.year}` : ""}` : "1 selected";
+            return `${name}${undo("unpin", "Deselect this frame")}`;
         }
         if (this.likeOf) {
-            return `Like <b>${esc(this.likeOf.filmTitle || "that frame")}</b> · ${this.rows.length} frames`;
+            return `Like <b>${esc(this.likeOf.filmTitle || "that frame")}</b>${undo("unlike", "Back to the text search")}`;
         }
         if (this.rows.length) return `${this.rows.length} frames · click one to use it`;
         return this.driven ? "query_in" : "";
@@ -810,13 +852,13 @@ class ReferenceBody {
         ${this.filterCount ? `<button class="ft-clearf" data-act="clearfilters">Clear ${this.filterCount}</button>` : ""}
       </div>` : ""}
       <div class="ft-search">
+        <i class="ft-load" style="width:${this.progress}%"></i>
         ${ICON.search}
         <input type="text" spellcheck="false"
                placeholder="${this.driven ? "waiting for query_in…" : "neon rain at night"}"
                value="${esc(this.get("query") || "")}" ${this.driven ? "readonly" : ""}
                title="${this.driven ? "Coming from query_in — edit it on the node that feeds this one" : ""}"/>
       </div>
-      ${this.progress > 0 ? `<div class="ft-bar"><i style="width:${this.progress}%"></i></div>` : ""}
       <div class="ft-scroll">${this.body()}</div>
       <div class="ft-foot">
         <span class="ft-left">
@@ -913,7 +955,15 @@ class ReferenceBody {
             if (btn) {
                 e.stopPropagation();
                 const act = btn.dataset.act;
-                if (act === "filters") {
+                if (act === "unpin") {
+                    this.pinnedId = null;
+                    this.set("pinned", "");
+                    this.render();
+                } else if (act === "unlike") {
+                    this.likeOf = null;
+                    this.lastKey = "";
+                    this.search();
+                } else if (act === "filters") {
                     this.filtersOpen = !this.filtersOpen;
                     this.render();
                 } else if (act === "clearfilters") {
