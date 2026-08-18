@@ -304,12 +304,16 @@ app.registerExtension({
             this.ftUI = ui;
             this.addDOMWidget("ft_results", "div", ui.root, { serialize: false, hideOnZoom: false });
 
-            // `pinned` is written by the grid, never typed into. Hidden so a
-            // blob of JSON stays off the node face without dropping out of the
-            // saved workflow.
+            // `pinned` is written by the grid, never typed into. It stays a
+            // widget so it still saves into the workflow, but it is not drawn.
+            //
+            // `hidden`, not `type = "hidden"`: the frontend decides visibility
+            // in isWidgetVisible(), which reads the flag and ignores the type
+            // entirely. Setting the type left a nameless box on the node that
+            // the results panel then clipped in half.
             const pinned = this.widgets.find((w) => w.name === "pinned");
             if (pinned) {
-                pinned.type = "hidden";
+                pinned.hidden = true;
                 pinned.computeSize = () => [0, -4];
             }
 
