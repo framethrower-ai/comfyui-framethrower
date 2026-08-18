@@ -25,7 +25,9 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const NODE = "FrameThrowerReference";
-const PAGE_SIZE = 30;
+// /api/v1/search caps a call at 50 and has no offset, so one search is one
+// page. Endless scroll went with it rather than scrolling into nothing.
+const PAGE_SIZE = 50;
 
 /** One /status request per page load, shared by every node on the canvas. */
 let statusPromise = null;
@@ -33,9 +35,11 @@ let statusPromise = null;
 /** Every native widget, so they can all be hidden in one pass. */
 const NATIVE = ["query", "mode", "index", "pinned"];
 
+// v1 takes hybrid and description. "semantic" is accepted but deprecated —
+// it is served as hybrid — so offering it would be offering the same thing
+// twice under a name that suggests otherwise.
 const MODES = [
     { key: "hybrid", label: "Hybrid" },
-    { key: "semantic", label: "Semantic" },
     { key: "description", label: "Text" },
 ];
 
@@ -207,8 +211,6 @@ class ReferenceBody {
         this.rows = [];
         this.pinnedId = null;
         this.loading = false;
-        this.more = false;
-        this.done = false;
         this.error = null;
         this.progress = 0;
         this.lastKey = "";
@@ -402,7 +404,7 @@ class ReferenceBody {
         return data;
     }
 
-    async search({ append = false } = {}) {
+    async search() {
         const q = String(this.get("query") || "").trim();
         const mode = this.get("mode") || "hybrid";
         if (!q) {
@@ -411,41 +413,20 @@ class ReferenceBody {
             return;
         }
         const key = `${q}::${mode}`;
-        if (!append && key === this.lastKey && this.rows.length) return;
-
-        if (append) this.more = true;
-        else {
-            this.lastKey = key;
-            this.loading = true;
-            this.error = null;
-            this.done = false;
-            this.tick(3000);
-        }
+        if (key === this.lastKey && this.rows.length) return;
+        this.lastKey = key;
+        this.loading = true;
+        this.error = null;
+        this.tick(3000);
         this.render();
 
         try {
-            const data = await this.post({
-                query: q, limit: PAGE_SIZE, mode,
-                offset: append ? this.rows.length : 0,
-            });
-            const rows = data.results || [];
-            if (append) {
-                // The vector index returns the same frame in overlapping
-                // windows, and a duplicate id would break the grid's diff too.
-                const seen = new Set(this.rows.map((r) => r.id));
-                const fresh = rows.filter((r) => !seen.has(r.id));
-                if (!fresh.length) this.done = true;
-                this.rows = this.rows.concat(fresh);
-            } else {
-                this.rows = rows;
-            }
-            if (rows.length < PAGE_SIZE) this.done = true;
+            const data = await this.post({ query: q, limit: PAGE_SIZE, mode });
+            this.rows = data.results || [];
         } catch (e) {
-            if (append) this.done = true;   // don't hammer a failing endpoint
-            else this.error = e.message;
+            this.error = e.message;
         } finally {
             this.loading = false;
-            this.more = false;
             clearInterval(this.timer);
             this.progress = 0;
             this.render();
@@ -465,7 +446,6 @@ class ReferenceBody {
         this.rows = [];
         this.pinnedId = null;
         this.error = null;
-        this.done = false;
         this.lastKey = "";
         this.set("pinned", "");
         this.render();
@@ -536,9 +516,7 @@ class ReferenceBody {
       </div>`
             )
             .join("");
-        const tail = this.more ? `<div class="ft-more">Loading more…</div>`
-            : this.done && this.rows.length >= PAGE_SIZE ? `<div class="ft-more">End of results</div>` : "";
-        return `<div class="ft-grid">${cells}</div>${tail}`;
+        return `<div class="ft-grid">${cells}</div>`;
     }
 
     status() {
@@ -630,12 +608,6 @@ class ReferenceBody {
         const scroll = this.root.querySelector(".ft-scroll");
         if (scroll) {
             scroll.scrollTop = keep;
-            scroll.onscroll = () => {
-                if (this.loading || this.more || this.done || !this.rows.length) return;
-                if (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 140) {
-                    this.search({ append: true });
-                }
-            };
         }
 
         this.root.onclick = (e) => {
@@ -663,7 +635,7 @@ class ReferenceBody {
                 } else if (act === "refresh") {
                     // Also the way back from a connect that failed.
                     if (!this.status_?.configured) this.checkStatus({ fresh: true });
-                    else { this.lastKey = ""; this.done = false; this.search(); }
+                    else { this.lastKey = ""; this.search(); }
                 } else this.clear();
                 return;
             }

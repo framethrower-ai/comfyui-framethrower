@@ -75,7 +75,7 @@ def _post(path, payload, token=None, base=None, timeout=60):
         except Exception:
             msg = body
         if exc.code == 401:
-            msg = "Token rejected (401). Check FT_API_TOKEN."
+            msg = "Token rejected. Sign in again."
         if exc.code == 402:
             msg = "Out of credits. Top up at framethrower.ai → Settings → Billing."
         raise FrameThrowerError(f"{msg}") from exc
@@ -83,24 +83,58 @@ def _post(path, payload, token=None, base=None, timeout=60):
         raise FrameThrowerError(f"Could not reach {base}: {exc.reason}") from exc
 
 
-def search(query, limit=30, mode="hybrid", offset=0):
-    """Text search. Returns the raw result rows: id, src, fullSrc, filmTitle,
-    director, year, description."""
+# The most /api/v1/search will return in one call. There is no offset on the
+# public API, so this is also the total a query can show.
+MAX_LIMIT = 50
+
+
+def _row(r):
+    """One /api/v1 result, flattened into what the node's UI and nodes.py want.
+
+    v1 nests the film and the metadata; everything downstream was written
+    against the flat shape, and flattening here keeps that one function wide
+    rather than spreading `r["film"]["title"]` through the grid and the tensor
+    loader both.
+    """
+    film = r.get("film") or {}
+    meta = r.get("metadata") or {}
+    return {
+        "id": r.get("id"),
+        # Small for the grid, full for the tensor. Both come from v1 directly —
+        # no URL is assembled here, because IMAGE_BASE already carries /core and
+        # rebuilding these by hand is how you get a 404 that looks like a bug.
+        "src": r.get("thumbUrl") or r.get("imageUrl"),
+        "fullSrc": r.get("imageUrl") or r.get("thumbUrl"),
+        "filmTitle": film.get("title"),
+        "director": film.get("director"),
+        "year": film.get("year"),
+        "description": meta.get("sceneDescription"),
+    }
+
+
+def search(query, limit=MAX_LIMIT, mode="hybrid"):
+    """Text search against the public, per-account API.
+
+    /api/external/* was the wrong door: it checks one shared EXTERNAL_API_TOKEN
+    belonging to FrameThrower's own apps, so a token minted for a person 401s
+    against it. /api/v1 authenticates the token the pairing flow issues, meters
+    it, and bills the right account — which is the whole point of signing in.
+    """
     if not query or not query.strip():
         return []
     data = _post(
-        "/api/external/search",
-        {"query": query.strip(), "limit": limit, "mode": mode, "offset": offset},
+        "/api/v1/search",
+        {"query": query.strip(), "limit": min(int(limit), MAX_LIMIT), "mode": mode},
     )
-    return data.get("results") or []
+    return [_row(r) for r in (data.get("data") or [])]
 
 
 def search_by_image(image_url):
-    """Visually similar frames. No paging on the API side — one shot."""
+    """Visually similar frames."""
     if not image_url:
         return []
-    data = _post("/api/external/search-image", {"imageUrl": image_url}, timeout=120)
-    return data.get("results") or []
+    data = _post("/api/v1/search/image", {"imageUrl": image_url}, timeout=120)
+    return [_row(r) for r in (data.get("data") or [])]
 
 
 def _request_anon(url, payload=None, timeout=20):
@@ -182,11 +216,12 @@ try:
                 return _web.json_response({"results": results, "exhausted": True})
             results = search(
                 body.get("query", ""),
-                limit=int(body.get("limit", 30)),
+                limit=int(body.get("limit", MAX_LIMIT)),
                 mode=body.get("mode", "hybrid"),
-                offset=int(body.get("offset", 0)),
             )
-            return _web.json_response({"results": results, "exhausted": len(results) < int(body.get("limit", 30))})
+            # v1 has no offset, so one call is all there is. Saying so lets the
+            # grid stop asking rather than scrolling into a silent nothing.
+            return _web.json_response({"results": results, "exhausted": True})
         except FrameThrowerError as exc:
             return _web.json_response({"error": str(exc)}, status=502)
         except Exception as exc:  # noqa: BLE001 - surface anything to the node UI
@@ -293,7 +328,7 @@ try:
                 status=409,
             )
         try:
-            _post("/api/external/search", {"query": "test", "limit": 1}, token=token)
+            _post("/api/v1/search", {"query": "test", "limit": 1}, token=token)
         except FrameThrowerError as exc:
             return _web.json_response({"error": str(exc)}, status=401)
 
