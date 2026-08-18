@@ -24,7 +24,9 @@ from PIL import Image, ImageOps
 
 from . import ft_api
 
-MODES = ["hybrid", "semantic", "description"]
+# v1 accepts "semantic" but serves it as hybrid, so offering it would be the
+# same search twice under a name that says otherwise.
+MODES = ["hybrid", "description"]
 
 # A processor that is switched off still has to hand back a tensor — Comfy has
 # no null on an IMAGE socket. One black pixel is the cheapest honest answer:
@@ -114,6 +116,48 @@ def _fal_process(image_url, want_depth, want_pose, want_lineart):
     return out
 
 
+def _host_image(tensor):
+    """Put a graph tensor somewhere FrameThrower can fetch it, and return the URL.
+
+    /api/v1/search/image takes a URL and pulls the picture from its own side, so
+    an image that exists only as floats in this process has to be published
+    first. fal's storage is used because the node already depends on fal for the
+    three processors — adding a second host for one feature would be a second
+    key to manage and a second thing to explain.
+    """
+    key = ft_api.config()["fal_key"]
+    if not key:
+        raise ValueError(
+            "image_in needs a FAL_KEY. FrameThrower fetches the picture by URL, "
+            "so it has to be uploaded somewhere first — set FAL_KEY in the "
+            "environment or in config.json. Text search does not need this."
+        )
+    try:
+        import fal_client
+    except ImportError as exc:
+        raise ValueError(
+            "image_in needs the fal client: pip install fal-client"
+        ) from exc
+
+    import os
+    import tempfile
+
+    arr = (tensor[0].cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fh:
+            path = fh.name
+            Image.fromarray(arr).save(fh, format="PNG")
+        os.environ.setdefault("FAL_KEY", key)
+        return fal_client.upload_file(path)
+    finally:
+        if path and os.path.isfile(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 #: Output socket order, so a connection can be mapped back to a processor.
 OUT_IMAGE, OUT_PROMPT, OUT_CREDIT, OUT_DEPTH, OUT_POSE, OUT_LINEART = range(6)
 
@@ -171,6 +215,16 @@ class FrameThrowerReference:
             },
             "optional": {
                 "query_in": ("STRING", {"forceInput": True}),
+                # Reverse search: find frames that look like this one.
+                #
+                # Only takes effect on execute, and it cannot preview in the
+                # grid. /api/v1/search/image takes a URL and fetches it from
+                # FrameThrower's side, so a tensor sitting in a graph has to be
+                # hosted somewhere public first — the node uploads it to fal,
+                # which is why this route needs FAL_KEY and the text one does
+                # not. The browser has no copy of the tensor either way, so
+                # there is nothing the UI could show before you queue.
+                "image_in": ("IMAGE",),
             },
             # The graph itself, so the node can see which of its outputs anyone
             # is actually using. See _connected_outputs.
@@ -210,17 +264,25 @@ class FrameThrowerReference:
     DESCRIPTION = "FT / FrameThrower reference frames. Search the film-still library and output the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
 
     @classmethod
-    def IS_CHANGED(cls, query, mode, index, pinned, query_in=None, prompt=None, unique_id=None):
+    def IS_CHANGED(cls, query, mode, index, pinned, query_in=None, image_in=None, prompt=None, unique_id=None):
         # Without this the node re-searches on every queue, and a search costs
         # credits. Hash the inputs so an unchanged node is a cache hit. The
         # connected outputs are part of the hash: wiring depth up has to
         # re-run the node, or the socket would stay black until something else
         # happened to invalidate the cache.
         wanted = sorted(_connected_outputs(prompt, unique_id) or [])
-        blob = f"{query_in or query}|{mode}|{index}|{pinned}|{wanted}"
+        # An incoming image is hashed by its content, not its identity: the
+        # same picture arriving from a different node is the same search.
+        img = ""
+        if image_in is not None:
+            try:
+                img = hashlib.sha256(image_in[0].cpu().numpy().tobytes()).hexdigest()[:16]
+            except Exception:
+                img = "image"
+        blob = f"{query_in or query}|{mode}|{index}|{pinned}|{wanted}|{img}"
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-    def fetch(self, query, mode, index, pinned, query_in=None, prompt=None, unique_id=None):
+    def fetch(self, query, mode, index, pinned, query_in=None, image_in=None, prompt=None, unique_id=None):
         row = None
 
         # A frame clicked in the grid wins over the query — you looked at it and
@@ -232,12 +294,24 @@ class FrameThrowerReference:
             except json.JSONDecodeError:
                 row = None
 
+        # An image on the wire is a more specific request than a text query, so
+        # it wins — you would not connect one and expect the words to be used.
+        if row is None and image_in is not None:
+            url = _host_image(image_in)
+            results = ft_api.search_by_image(url)
+            if not results:
+                raise ValueError("No frames looked like that image.")
+            if index >= len(results):
+                raise ValueError(f"index {index} is past the {len(results)} results for that image.")
+            row = results[index]
+
         if row is None:
             text = (query_in or query or "").strip()
             if not text:
                 raise ValueError(
                     "Reference node has no query. Type one, wire a string into "
-                    "query_in, or click a frame in the node's grid."
+                    "query_in, wire an image into image_in, or click a frame in "
+                    "the node's grid."
                 )
             results = ft_api.search(text, limit=min(index + 1, 50), mode=mode)
             if not results:

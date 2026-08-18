@@ -32,6 +32,52 @@ const PAGE_SIZE = 50;
 /** One /status request per page load, shared by every node on the canvas. */
 let statusPromise = null;
 
+/** The frame currently being dragged out of some node's grid, if any. */
+let dragging = null;
+
+/**
+ * Registered once, on the canvas, rather than per node: the drop lands on the
+ * canvas element, not on the node the drag started in, so a per-node handler
+ * would never fire.
+ */
+function installDropHandler() {
+    const canvas = app.canvas?.canvas;
+    if (!canvas || canvas.dataset.ftDrop) return;
+    canvas.dataset.ftDrop = "1";
+
+    canvas.addEventListener("dragover", (e) => {
+        if (!dragging) return;
+        e.preventDefault();                    // without this, drop never fires
+        e.dataTransfer.dropEffect = "copy";
+    });
+
+    canvas.addEventListener("drop", (e) => {
+        const row = dragging;
+        if (!row) return;
+        e.preventDefault();
+        e.stopPropagation();                   // Comfy also handles drops, for files
+        dragging = null;
+        try {
+            const node = LiteGraph.createNode(NODE);
+            if (!node) return;
+            app.graph.add(node);
+            node.pos = app.canvas.convertEventToCanvasOffset(e);
+            const pinned = node.widgets?.find((w) => w.name === "pinned");
+            if (pinned) pinned.value = JSON.stringify(row);
+            const query = node.widgets?.find((w) => w.name === "query");
+            if (query) query.value = row.filmTitle || "";
+            if (node.ftUI) {
+                node.ftUI.pinnedId = row.id;
+                node.ftUI.rows = [row];
+                node.ftUI.render();
+            }
+            app.graph.setDirtyCanvas(true, true);
+        } catch (err) {
+            console.error("[FrameThrower] could not drop frame:", err);
+        }
+    });
+}
+
 /** Every native widget, so they can all be hidden in one pass. */
 const NATIVE = ["query", "mode", "index", "pinned"];
 
@@ -93,7 +139,15 @@ const CSS = `
 .ft-cell { position:relative; aspect-ratio:16/9; overflow:hidden; cursor:pointer;
   border-radius:2px; box-shadow:inset 0 0 0 .5px rgba(255,255,255,.2); }
 .ft-cell:hover { box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.6); }
-.ft-cell.on { box-shadow:inset 0 0 0 2px var(--ft-on); }
+/* Selected. Two rings — the accent inside, a dark one outside — so it reads
+   against a bright frame and a dark one both, which a single inset line does
+   not. Dimming the others is what actually makes it findable in a grid of 50. */
+.ft-cell.on { box-shadow:inset 0 0 0 2.5px var(--ft-on), 0 0 0 1px rgba(0,0,0,.9);
+  outline:1px solid var(--ft-on); outline-offset:1px; z-index:1; }
+.ft-grid.picked .ft-cell:not(.on) { opacity:.42; }
+.ft-grid.picked .ft-cell:not(.on):hover { opacity:1; }
+.ft-cell.on::after { content:""; position:absolute; inset:0;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.35); pointer-events:none; }
 .ft-cell img { width:100%; height:100%; object-fit:cover; display:block; }
 /* A frame whose picture will not load. The browser's broken-image glyph is
    worse than useless inside a grid of pictures — it reads as a bug in the node
@@ -217,6 +271,8 @@ class ReferenceBody {
         this.timer = null;
         this.debounce = null;
         this.status_ = null;      // null until /status answers; then {configured,…}
+        this.mirrored = null;     // last text seen on the query_in wire
+        this.watch = null;
         this.connError = null;
         this.connStep = null;   // null | "paste" | "code"
         this.pairCode = null;
@@ -230,6 +286,7 @@ class ReferenceBody {
         }
         this.render();
         this.checkStatus();
+        this.watchUpstream();
     }
 
     // ── native widgets are the source of truth; these are the only accessors ──
@@ -260,6 +317,56 @@ class ReferenceBody {
     /** True when something is wired into query_in, which overrides the box. */
     get driven() {
         return Boolean(this.node.inputs?.find((i) => i.name === "query_in")?.link != null);
+    }
+
+    /**
+     * The text coming down the query_in wire, read straight off the upstream
+     * node's widget.
+     *
+     * Comfy does not evaluate the graph until you queue it, so there is no
+     * "current value" of a link to ask for — the only way to show what is
+     * arriving is to walk to the node on the other end and read it. Widget
+     * names differ by node (CLIP Text Encode calls it `text`, a primitive
+     * calls it `value`), so try the usual ones and then any string widget.
+     */
+    upstreamText() {
+        const slot = this.node.inputs?.findIndex((i) => i.name === "query_in");
+        if (slot == null || slot < 0) return null;
+        const src = this.node.getInputNode?.(slot);
+        if (!src?.widgets) return null;
+        for (const name of ["text", "value", "string", "prompt"]) {
+            const w = src.widgets.find((x) => x.name === name);
+            if (typeof w?.value === "string") return w.value;
+        }
+        const any = src.widgets.find((x) => typeof x.value === "string");
+        return typeof any?.value === "string" ? any.value : null;
+    }
+
+    /**
+     * Show what the wire is carrying, and search on it.
+     *
+     * Polled rather than hooked: the upstream widget can change from typing, an
+     * undo, a workflow load or another extension, and only some of those fire a
+     * callback we could subscribe to. 400ms is under the threshold where it
+     * feels like lag and far above the cost of reading one string.
+     */
+    watchUpstream() {
+        clearInterval(this.watch);
+        this.watch = setInterval(() => {
+            if (!this.driven) {
+                if (this.mirrored != null) { this.mirrored = null; this.render(); }
+                return;
+            }
+            const text = (this.upstreamText() || "").trim();
+            if (text === this.mirrored) return;
+            this.mirrored = text;
+            this.set("query", text);
+            this.render();
+            clearTimeout(this.debounce);
+            // A second, like the canvas node: long enough that typing upstream
+            // does not spend a search per keystroke.
+            this.debounce = setTimeout(() => this.search(), 1000);
+        }, 400);
     }
 
     /** Asked once per node, and again after a successful connect. Shared across
@@ -500,13 +607,13 @@ class ReferenceBody {
         if (this.loading && !this.rows.length) return `<div class="ft-msg">Searching…</div>`;
         if (!this.rows.length) {
             return `<div class="ft-msg">${this.driven
-                ? "Driven by query_in — runs on execute"
+                ? "Waiting for text on query_in"
                 : "Search the library, then click a frame to use it"}</div>`;
         }
         const cells = this.rows
             .map(
                 (r, i) => `<div class="ft-cell${r.id === this.pinnedId ? " on" : ""}" data-i="${i}">
-        <img src="${esc(r.src)}" alt="" loading="lazy" draggable="false"
+        <img src="${esc(r.src)}" alt="" loading="lazy" draggable="true"
              referrerpolicy="no-referrer"
              onerror="this.closest('.ft-cell').classList.add('bad');this.remove()"/>
         <span class="ft-bad">${esc(r.filmTitle || "unavailable")}</span>
@@ -516,7 +623,7 @@ class ReferenceBody {
       </div>`
             )
             .join("");
-        return `<div class="ft-grid">${cells}</div>`;
+        return `<div class="ft-grid${this.pinnedId ? " picked" : ""}">${cells}</div>`;
     }
 
     status() {
@@ -544,8 +651,9 @@ class ReferenceBody {
       <div class="ft-search">
         ${ICON.search}
         <input type="text" spellcheck="false"
-               placeholder="${this.driven ? "driven by query_in" : "neon rain at night"}"
-               value="${esc(this.get("query") || "")}" ${this.driven ? "disabled" : ""}/>
+               placeholder="${this.driven ? "waiting for query_in…" : "neon rain at night"}"
+               value="${esc(this.get("query") || "")}" ${this.driven ? "readonly" : ""}
+               title="${this.driven ? "Coming from query_in — edit it on the node that feeds this one" : ""}"/>
       </div>
       ${this.progress > 0 ? `<div class="ft-bar"><i style="width:${this.progress}%"></i></div>` : ""}
       <div class="ft-scroll">${this.body()}</div>
@@ -609,6 +717,23 @@ class ReferenceBody {
         if (scroll) {
             scroll.scrollTop = keep;
         }
+
+        // Dragging a frame onto the canvas drops a new Reference node already
+        // pinned to it. On the workspace canvas a dragged frame became an image
+        // node; a graph has no such thing, and a pinned Reference is the same
+        // idea — a node that outputs exactly that picture — while keeping the
+        // credit and the description attached to it.
+        this.root.ondragstart = (e) => {
+            const cell = e.target.closest(".ft-cell");
+            if (!cell) return;
+            const row = this.rows[Number(cell.dataset.i)];
+            if (!row) return;
+            dragging = row;
+            e.dataTransfer.effectAllowed = "copy";
+            // Some payload is required or Chrome cancels the drag outright.
+            e.dataTransfer.setData("text/plain", row.fullSrc || row.src || "");
+        };
+        this.root.ondragend = () => { dragging = null; };
 
         this.root.onclick = (e) => {
             const btn = e.target.closest("[data-act]");
@@ -683,6 +808,7 @@ app.registerExtension({
                 getMaxHeight: () => 1e6,
             });
 
+            installDropHandler();
             this.size = [320, 400];
             this.serialize_widgets = true;
         };
