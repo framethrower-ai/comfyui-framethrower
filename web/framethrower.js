@@ -115,7 +115,7 @@ function installDropHandler() {
 }
 
 /** Every native widget, so they can all be hidden in one pass. */
-const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart"];
+const NATIVE = ["query", "mode", "index", "pinned", "filters"];
 
 // v1 takes hybrid and description. "semantic" is accepted but deprecated —
 // it is served as hybrid — so offering it would be offering the same thing
@@ -307,11 +307,6 @@ const CSS = `
   color:var(--ft-dim); white-space:nowrap; }
 .ft-stat b { color:var(--ft-fg); font-weight:500; overflow:hidden; text-overflow:ellipsis; }
 .ft-via { color:var(--ft-on); cursor:help; border-bottom:1px dotted currentColor; }
-.ft-smart { flex:0 0 auto; padding:1px 5px; border:1px solid var(--ft-line); border-radius:3px;
-  background:transparent; color:var(--ft-dim); font:inherit; font-size:9px; cursor:pointer; }
-.ft-smart:hover { color:var(--ft-fg); }
-.ft-smart.on { color:var(--p-primary-contrast-color,#fff); background:var(--ft-on);
-  border-color:var(--ft-on); }
 .ft-undo { display:inline-flex; vertical-align:-1px; margin-left:4px; padding:1px;
   border:none; border-radius:2px; background:transparent; color:var(--ft-dim);
   cursor:pointer; }
@@ -672,7 +667,7 @@ class ReferenceBody {
                 // re-rewriting could return something slightly different and
                 // page two would rank in another neighbourhood than page one.
                 query: append && this.enhanced ? this.enhanced : q,
-                enhance: this.get("smart") !== false && !append,
+                enhance: !append,
                 limit: PAGE_SIZE, mode,
                 offset: append ? this.rows.length : 0,
                 ...this.filters,
@@ -850,7 +845,7 @@ class ReferenceBody {
             // Named, not hidden: the results answer the rewritten sentence, and
             // a search you cannot see is one you cannot correct.
             const via = this.enhanced
-                ? ` · <span class="ft-via" title="Searched as: ${esc(this.enhanced)}">rewritten</span>`
+                ? ` · <span class="ft-via" title="Smart search rewrote your words to match how the frames were described: ${esc(this.enhanced)}">smart</span>`
                 : "";
             return `${this.rows.length} frames${via} · click one to use it`;
         }
@@ -978,11 +973,7 @@ class ReferenceBody {
             if (btn) {
                 e.stopPropagation();
                 const act = btn.dataset.act;
-                if (act === "smart") {
-                    this.set("smart", this.get("smart") === false);
-                    this.lastKey = "";        // same words, different question
-                    this.search();
-                } else if (act === "unpin") {
+                if (act === "unpin") {
                     this.pinnedId = null;
                     this.set("pinned", "");
                     this.render();
