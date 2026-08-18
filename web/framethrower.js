@@ -711,7 +711,7 @@ class ReferenceBody {
 
     async search({ append = false } = {}) {
         const q = String(this.get("query") || "").trim();
-        if (!q) {
+        if (!q && !this.colorOf) {
             this.rows = [];
             this.render();
             return;
@@ -743,6 +743,9 @@ class ReferenceBody {
                 enhance: this.get("smart") !== false && !append,
                 limit: PAGE_SIZE, mode,
                 offset: append ? this.rows.length : 0,
+                // Sent alongside the query rather than instead of it: v1 fuses
+                // the two, so "ocean" in teal stays about the sea.
+                ...(this.colorOf ? { color: this.colorOf } : {}),
                 ...this.filters,
             });
             if (!append) this.enhanced = data.enhancedQuery || null;
@@ -812,27 +815,12 @@ class ReferenceBody {
      * together. So this replaces the results, like the eye does, and the words
      * stay in the box to come back to.
      */
-    async searchColor(hex, hue) {
+    setColor(hex, hue) {
         this.colorOf = hex;
         this.hueOf = hue;
         this.likeOf = null;
-        this.loading = true;
-        this.error = null;
-        this.done = true;             // colour search returns one page
-        this.lastKey = `color::${hex}`;
-        this.tick(searchMs);
-        this.render();
-        try {
-            const data = await this.post({ color: hex, limit: PAGE_SIZE });
-            this.rows = data.results || [];
-        } catch (e) {
-            this.error = e.message;
-        } finally {
-            this.loading = false;
-            clearInterval(this.timer);
-            this.progress = 0;
-            this.render();
-        }
+        this.lastKey = "";            // same words, different question
+        this.search();
     }
 
     /** Clicking the selected frame again deselects it — one click to undo a
@@ -946,7 +934,7 @@ class ReferenceBody {
             return `Like <b>${esc(this.likeOf.filmTitle || "that frame")}</b>${undo("unlike", "Back to the text search")}`;
         }
         if (this.colorOf) {
-            return `<span class="ft-chip" style="background:${esc(this.colorOf)}"></span><b>${esc(this.colorOf)}</b> · ${this.rows.length} frames${undo("uncolor", "Back to the text search")}`;
+            return `<span class="ft-chip" style="background:${esc(this.colorOf)}"></span>${this.rows.length} frames${undo("uncolor", "Drop the colour")}`;
         }
         // The rewrite is reported by the button that controls it, not here. As
         // text in this line it collided with the count — .ft-stat is a nowrap
@@ -1076,7 +1064,7 @@ class ReferenceBody {
             e.stopPropagation();
             const box = hue.getBoundingClientRect();
             const h = Math.max(0, Math.min(359, Math.round(((e.clientX - box.left) / box.width) * 360)));
-            this.searchColor(hslToHex(h), h);
+            this.setColor(hslToHex(h), h);
         };
 
         this.root.onclick = (e) => {
@@ -1096,7 +1084,8 @@ class ReferenceBody {
                     this.colorOf = null;
                     this.hueOf = null;
                     this.lastKey = "";
-                    this.search();
+                    if (String(this.get("query") || "").trim()) this.search();
+                    else { this.rows = []; this.render(); }
                 } else if (act === "unlike") {
                     this.likeOf = null;
                     this.lastKey = "";

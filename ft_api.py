@@ -134,7 +134,7 @@ def _row(r):
     }
 
 
-def search_full(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, enhance=True):
+def search_full(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, enhance=True, color=None):
     """Text search against the public, per-account API.
 
     /api/external/* was the wrong door: it checks one shared EXTERNAL_API_TOKEN
@@ -152,6 +152,9 @@ def search_full(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, e
     }
     if enhance:
         payload["enhance"] = True
+    # Sent with the query, not instead of it — v1 fuses the two by rank.
+    if color:
+        payload["color"] = color
     for key, value in (filters or {}).items():
         if key in FILTER_KEYS and value not in (None, "", []):
             payload[key] = value
@@ -159,9 +162,9 @@ def search_full(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, e
     return [_row(r) for r in (data.get("data") or [])], (data.get("meta") or {})
 
 
-def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, enhance=True):
+def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, enhance=True, color=None):
     """Rows only, for callers that do not care how the query was rewritten."""
-    rows, _ = search_full(query, limit, mode, offset, filters, enhance)
+    rows, _ = search_full(query, limit, mode, offset, filters, enhance, color)
     return rows
 
 
@@ -263,7 +266,9 @@ try:
     async def _route_search(request):
         try:
             body = await request.json()
-            if body.get("color"):
+            # Colour with no words is still the colour endpoint — there is no
+            # query to fuse with, and /search/color is what it is for.
+            if body.get("color") and not (body.get("query") or "").strip():
                 return _web.json_response({
                     "results": search_color(body["color"], int(body.get("limit", MAX_LIMIT))),
                     "exhausted": True,
@@ -278,6 +283,7 @@ try:
                 mode=body.get("mode", "hybrid"), offset=offset,
                 filters={k: body[k] for k in FILTER_KEYS if k in body},
                 enhance=bool(body.get("enhance", True)),
+                color=body.get("color"),
             )
             # Exhausted when the page came back short, or when the next page
             # would start past what v1 will rank.
