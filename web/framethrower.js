@@ -341,7 +341,18 @@ app.registerExtension({
 
             const ui = new Results(this);
             this.ftUI = ui;
-            this.addDOMWidget("ft_results", "div", ui.root, { serialize: false, hideOnZoom: false });
+            // The layout hands each widget a height between its min and its
+            // max, then splits whatever is left over. A widget with no max
+            // takes its minimum and the remainder stays empty — which is what
+            // left a dead band under the grid. An effectively unbounded max
+            // makes this the widget that absorbs the slack, so the results
+            // reach from the query box to the bottom edge at any node size.
+            this.addDOMWidget("ft_results", "div", ui.root, {
+                serialize: false,
+                hideOnZoom: false,
+                getMinHeight: () => 80,
+                getMaxHeight: () => 1e6,
+            });
 
             // `pinned` is written by the grid, never typed into. It stays a
             // widget so it still saves into the workflow, but it is not drawn.
@@ -378,7 +389,9 @@ app.registerExtension({
             // line, and the results are what the node is for.
             const query = this.widgets.find((w) => w.name === "query");
             if (query) {
-                query.computeLayoutSize = () => ({ minHeight: QUERY_H, minWidth: 200 });
+                // min AND max, both at two rows: with only a min it would join
+                // the results widget in competing for the leftover space.
+                query.computeLayoutSize = () => ({ minHeight: QUERY_H, maxHeight: QUERY_H, minWidth: 200 });
                 const el = query.element || query.inputEl;
                 if (el) {
                     el.style.height = `${QUERY_H}px`;
