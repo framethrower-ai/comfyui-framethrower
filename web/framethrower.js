@@ -34,9 +34,12 @@ const MODES = [
     { key: "description", label: "Text" },
 ];
 
+/** Sits in the top row, in socket order, so each toggle lines up with the
+ *  output it feeds. Icons rather than words because three words plus a search
+ *  box do not fit across a node this narrow. */
 const PROCESSORS = [
-    { key: "depth", label: "Depth" },
-    { key: "pose", label: "Pose" },
+    { key: "depth", label: "Depth map" },
+    { key: "pose", label: "DW pose" },
     { key: "lineart", label: "Lineart" },
 ];
 
@@ -58,6 +61,14 @@ const CSS = `
   background:transparent; color:var(--ft-dim); cursor:pointer; }
 .ft-cog:hover { background:rgba(255,255,255,.1); color:#fff; }
 .ft-cog.on { background:rgba(232,84,47,.16); color:var(--ft-accent); }
+/* the three map toggles, in output-socket order */
+.ft-maps { flex:0 0 auto; display:flex; gap:1px; padding-right:2px; margin-right:2px;
+  border-right:1px solid var(--ft-line); }
+.ft-map { display:flex; padding:3px; border:none; border-radius:4px; background:transparent;
+  color:rgba(255,255,255,.28); cursor:pointer; }
+.ft-map svg { width:12px; height:12px; }
+.ft-map:hover { background:rgba(255,255,255,.1); color:#fff; }
+.ft-map.on { color:var(--ft-accent); background:rgba(232,84,47,.14); }
 
 /* settings drawer */
 .ft-set { flex:0 0 auto; display:flex; flex-direction:column; gap:6px; padding:7px;
@@ -124,6 +135,9 @@ const SVG = (d, extra = "") =>
 const ICON = {
     search: SVG('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'),
     cog: SVG('<circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>'),
+    depth: SVG('<path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>'),
+    pose: SVG('<circle cx="12" cy="4" r="2"/><path d="M12 6v6M6 9h12M12 12l-3 8M12 12l3 8"/>'),
+    lineart: SVG('<path d="M12 19l7-7 3 3-7 7-3-3Z"/><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5Z"/><path d="m2 2 7.6 7.6"/><circle cx="11" cy="11" r="2"/>'),
     refresh: SVG('<path d="M21 12a9 9 0 0 0-9-9 9.8 9.8 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.8 9.8 0 0 0 6.7-2.7L21 16"/><path d="M16 16h5v5"/>'),
     x: SVG('<path d="M18 6 6 18M6 6l12 12"/>'),
 };
@@ -286,12 +300,10 @@ class ReferenceBody {
         const pills = MODES.map(
             (m) => `<button class="ft-pill${m.key === mode ? " on" : ""}" data-mode="${m.key}">${m.label}</button>`
         ).join("");
-        const procs = PROCESSORS.map(
-            (p) => `<button class="ft-pill${this.get(p.key) ? " on" : ""}" data-proc="${p.key}">${p.label}</button>`
-        ).join("");
+        // Maps are not repeated here — they live in the top row now, and a
+        // control in two places is a control you can disagree with itself.
         return `<div class="ft-set">
       <div class="ft-row"><span class="ft-lbl">Search</span><span class="ft-pills">${pills}</span></div>
-      <div class="ft-row"><span class="ft-lbl">Maps</span><span class="ft-pills">${procs}</span></div>
       <div class="ft-row"><span class="ft-lbl">Index</span>
         <input class="ft-num" type="number" min="0" max="499" value="${Number(this.get("index") ?? 0)}"/>
         <span class="ft-hint">Which result to use when query_in is wired and nothing is selected.</span>
@@ -344,7 +356,11 @@ class ReferenceBody {
         <input type="text" spellcheck="false"
                placeholder="${this.driven ? "driven by query_in" : "neon rain at night"}"
                value="${esc(this.get("query") || "")}" ${this.driven ? "disabled" : ""}/>
-        <button class="ft-cog${this.settingsOpen ? " on" : ""}" data-act="cog" title="Settings">${ICON.cog}</button>
+        <span class="ft-maps">${PROCESSORS.map(
+        (p) => `<button class="ft-map${this.get(p.key) ? " on" : ""}" data-proc="${p.key}"
+                  title="${p.label} — costs one fal call per frame">${ICON[p.key]}</button>`
+    ).join("")}</span>
+        <button class="ft-cog${this.settingsOpen ? " on" : ""}" data-act="cog" title="Search mode and index">${ICON.cog}</button>
       </div>
       ${this.settings()}
       <div class="ft-bar"><i style="width:${this.progress}%"></i></div>
