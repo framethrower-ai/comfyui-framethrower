@@ -95,7 +95,9 @@ const CSS = `
 .ft-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; padding:3px; }
 .ft-scroll::-webkit-scrollbar { width:5px; }
 .ft-scroll::-webkit-scrollbar-thumb { background:rgba(255,255,255,.14); border-radius:3px; }
-.ft-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(84px,1fr)); gap:2px; }
+/* --ft-thumb is the minimum cell width; auto-fill turns that into a column
+   count, so one slider changes both thumbnail size and how many fit a row. */
+.ft-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(var(--ft-thumb,84px),1fr)); gap:2px; }
 .ft-cell { position:relative; aspect-ratio:16/9; overflow:hidden; background:#151517;
   cursor:pointer; border-radius:2px; box-shadow:inset 0 0 0 .5px rgba(255,255,255,.18); }
 .ft-cell:hover { box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.55); }
@@ -120,7 +122,14 @@ const CSS = `
 .ft-stat { min-width:0; font-size:9.5px; color:rgba(255,255,255,.35);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .ft-stat b { color:rgba(255,255,255,.7); font-weight:500; }
-.ft-acts { display:flex; gap:1px; flex:0 0 auto; }
+.ft-acts { display:flex; align-items:center; gap:3px; flex:0 0 auto; }
+.ft-size { width:52px; height:12px; margin-right:2px; cursor:ew-resize;
+  -webkit-appearance:none; appearance:none; background:transparent; }
+.ft-size::-webkit-slider-runnable-track { height:2px; border-radius:2px;
+  background:rgba(255,255,255,.18); }
+.ft-size::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; margin-top:-3px;
+  width:8px; height:8px; border-radius:50%; background:var(--ft-dim); }
+.ft-size:hover::-webkit-slider-thumb { background:#fff; }
 .ft-acts button { display:flex; padding:3px; border:none; border-radius:4px; background:transparent;
   color:var(--ft-dim); cursor:pointer; }
 .ft-acts button:hover:not(:disabled) { background:rgba(255,255,255,.1); color:#fff; }
@@ -191,6 +200,17 @@ class ReferenceBody {
         if (!w) return;
         w.value = value;
         this.node.setDirtyCanvas(true, true);
+    }
+
+    /** Thumbnail size, kept in node properties so it saves with the workflow —
+     *  it is a view preference, not an input, and has no business in a socket. */
+    get thumb() {
+        return Number(this.node.properties?.ftThumb) || 84;
+    }
+    set thumb(px) {
+        this.node.properties = this.node.properties || {};
+        this.node.properties.ftThumb = px;
+        this.root.style.setProperty("--ft-thumb", `${px}px`);
     }
 
     /** True when something is wired into query_in, which overrides the box. */
@@ -368,6 +388,8 @@ class ReferenceBody {
       <div class="ft-foot">
         <span class="ft-stat">${this.status()}</span>
         <span class="ft-acts">
+          <input class="ft-size" type="range" min="56" max="220" step="4"
+                 value="${this.thumb}" title="Thumbnail size"/>
           <button data-act="refresh" title="Search again">${ICON.refresh}</button>
           <button data-act="clear" title="Clear results" ${this.rows.length ? "" : "disabled"}>${ICON.x}</button>
         </span>
@@ -395,6 +417,14 @@ class ReferenceBody {
 
         const num = this.root.querySelector(".ft-num");
         if (num) num.onchange = () => this.set("index", Math.max(0, Math.min(499, Number(num.value) || 0)));
+
+        // Drives a CSS variable rather than re-rendering: a re-render per slider
+        // step would rebuild every <img> and make the grid flash while dragging.
+        const size = this.root.querySelector(".ft-size");
+        if (size) {
+            this.root.style.setProperty("--ft-thumb", `${this.thumb}px`);
+            size.oninput = () => { this.thumb = Number(size.value); };
+        }
 
         const scroll = this.root.querySelector(".ft-scroll");
         if (scroll) {
