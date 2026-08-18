@@ -178,13 +178,20 @@ class FrameThrowerReference:
         }
 
     RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE", "IMAGE", "IMAGE")
-    RETURN_NAMES = ("image", "prompt", "credit", "depth", "pose", "lineart")
+    # The four image sockets carry no type suffix: Comfy already colours them by
+    # type and nobody mistakes "depth" for text. The two STRING ones are marked,
+    # because in Comfy "prompt" almost always means CONDITIONING — without the
+    # label the first instinct is to wire it into a KSampler, which cannot take
+    # it. A suffix on all six would just widen the socket column and take that
+    # width off the grid.
+    RETURN_NAMES = ("image", "prompt (text)", "credit (text)", "depth", "pose", "lineart")
     # Shown when you hover a socket, and — more usefully — the thing that tells
     # you what to plug each one into before you have plugged anything in.
     OUTPUT_TOOLTIPS = (
         "The frame itself. Into Preview Image, Save Image, or a VAE Encode / "
         "ControlNet / IPAdapter that takes an IMAGE.",
-        "The frame's scene description, as text. Into CLIP Text Encode.",
+        "The frame's scene description, as plain text — not conditioning. "
+        "Into CLIP Text Encode, which turns it into conditioning.",
         "Title, year and director, as text. Into a text overlay or Save Text, "
         "so the attribution travels with whatever you make.",
         "Depth map. Into a depth ControlNet. Runs only while this socket is wired.",
