@@ -211,7 +211,19 @@ const CSS = `
 /* the hue bar, above the field. Horizontal here rather than the site's
    vertical bar: a node is wide and short, and the search box it belongs to
    runs the same way. */
-.ft-hue { position:relative; flex:0 0 auto; height:12px; margin-bottom:5px; cursor:crosshair; }
+/* The row exists so the handle has somewhere to overhang into. It stands 2px
+   proud of the bar at each end, and the bar is the first thing in the node
+   body — without this padding the top of the handle is clipped by the body's
+   own overflow:hidden, which is what made it look sawn off. */
+.ft-hue-row { flex:0 0 auto; display:flex; align-items:center; gap:5px;
+  padding:3px 0 2px; margin-bottom:4px; }
+.ft-hue { position:relative; flex:1 1 auto; height:12px; cursor:crosshair; }
+/* Clearing the colour belongs beside the thing that set it, not only down in
+   the status line — that is where you are looking when you change your mind. */
+.ft-hue-x { flex:0 0 auto; display:flex; padding:2px; border:none; border-radius:3px;
+  background:transparent; color:var(--ft-dim); cursor:pointer; }
+.ft-hue-x svg { width:10px; height:10px; }
+.ft-hue-x:hover { color:var(--ft-fg); background:var(--p-content-hover-background,rgba(255,255,255,.12)); }
 .ft-hue-bar { display:block; height:100%; border-radius:3px;
   border:1px solid var(--ft-line); }
 .ft-hue-mark { position:absolute; top:-2px; width:8px; height:16px; margin-left:-4px;
@@ -960,9 +972,14 @@ class ReferenceBody {
         </label>`).join("")}
         ${this.filterCount ? `<button class="ft-clearf" data-act="clearfilters">Clear ${this.filterCount}</button>` : ""}
       </div>` : ""}
-      <div class="ft-hue" title="Click a colour to find frames dominated by it">
-        <i class="ft-hue-bar" style="background:linear-gradient(90deg,${HUE_GRADIENT})"></i>
-        ${this.colorOf ? `<i class="ft-hue-mark" style="left:${(this.hueOf ?? 0) / 360 * 100}%;background:${esc(this.colorOf)}"></i>` : ""}
+      <div class="ft-hue-row">
+        <div class="ft-hue" title="Click a colour to narrow the search to frames dominated by it">
+          <i class="ft-hue-bar" style="background:linear-gradient(90deg,${HUE_GRADIENT})"></i>
+          ${this.colorOf ? `<i class="ft-hue-mark" style="left:${(this.hueOf ?? 0) / 360 * 100}%;background:${esc(this.colorOf)}"></i>` : ""}
+        </div>
+        ${this.colorOf
+                ? `<button class="ft-hue-x" data-act="uncolor" title="Drop the colour">${ICON.x}</button>`
+                : ""}
       </div>
       <div class="ft-search">
         <i class="ft-load" style="width:${this.progress}%"></i>
