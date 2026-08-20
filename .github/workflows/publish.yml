@@ -2,8 +2,13 @@
 # Releasing is then: bump `version`, commit, push. Nothing to run locally.
 #
 # Needs one repository secret, REGISTRY_ACCESS_TOKEN — a publisher key from
-# registry.comfy.org. Without it the job fails loudly rather than silently
-# shipping nothing.
+# registry.comfy.org.
+#
+# Deliberately NOT using Comfy-Org/publish-node-action. Two reasons: its `@v1`
+# ref is a mutable branch, and this job holds a token that can publish under our
+# registry name; and as of 1.0.1 it runs `comfy --yes env`, an option comfy-cli
+# removed in 1.16 — so the action fails before it ever reaches the publish step.
+# comfy-cli is the thing that does the work either way, so call it directly.
 name: Publish to Comfy Registry
 
 on:
@@ -20,11 +25,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Publish
-        # Pinned to a release tag on purpose. Comfy-Org document `@v1`, but that
-        # is a mutable *branch* — anything landing on it would run with a token
-        # that can publish under our registry name. Bump this deliberately.
-        uses: Comfy-Org/publish-node-action@1.0.1
         with:
-          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
-          skip_checkout: "true"   # checked out above
+          fetch-depth: 0   # `node pack` reads git-tracked files
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned: a CLI release that drops a flag should not break releases
+      # silently, which is exactly what happened to the action above.
+      - run: pip install "comfy-cli==1.16.0"
+
+      - name: Validate
+        run: comfy node validate
+
+      - name: Publish
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+        run: |
+          if [ -z "$REGISTRY_TOKEN" ]; then
+            echo "::error::REGISTRY_ACCESS_TOKEN is not set on this repository."
+            exit 1
+          fi
+          comfy node publish --token "$REGISTRY_TOKEN"
