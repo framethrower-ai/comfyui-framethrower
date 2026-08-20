@@ -34,22 +34,6 @@
           "slot_index": 0
         },
         {
-          "name": "prompt (text)",
-          "type": "STRING",
-          "links": [
-            2
-          ],
-          "slot_index": 1
-        },
-        {
-          "name": "credit (text)",
-          "type": "STRING",
-          "links": [
-            3
-          ],
-          "slot_index": 2
-        },
-        {
           "name": "depth",
           "type": "IMAGE",
           "links": null
@@ -63,10 +47,27 @@
           "name": "lineart",
           "type": "IMAGE",
           "links": null
+        },
+        {
+          "name": "prompt (text)",
+          "type": "STRING",
+          "links": [
+            2
+          ],
+          "slot_index": 4
+        },
+        {
+          "name": "credit (text)",
+          "type": "STRING",
+          "links": [
+            3
+          ],
+          "slot_index": 5
         }
       ],
       "properties": {
-        "Node name for S&R": "FrameThrowerReference"
+        "Node name for S&R": "FrameThrowerReference",
+        "ftOutputs": 2
       },
       "widgets_values": [
         "neon rain at night",
@@ -175,7 +176,7 @@
     [
       2,
       1,
-      1,
+      4,
       3,
       0,
       "STRING"
@@ -183,7 +184,7 @@
     [
       3,
       1,
-      2,
+      5,
       4,
       0,
       "STRING"

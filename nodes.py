@@ -353,7 +353,7 @@ def _process(img, image_url, want_depth, want_pose, want_lineart, lineart_streng
 
 
 #: Output socket order, so a connection can be mapped back to a processor.
-OUT_IMAGE, OUT_PROMPT, OUT_CREDIT, OUT_DEPTH, OUT_POSE, OUT_LINEART = range(6)
+OUT_IMAGE, OUT_DEPTH, OUT_POSE, OUT_LINEART, OUT_PROMPT, OUT_CREDIT = range(6)
 
 
 def _connected_outputs(prompt, unique_id):
@@ -454,30 +454,34 @@ class FrameThrowerReference:
             "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "IMAGE", "IMAGE", "IMAGE")
+    # Pictures first, text last. The four IMAGE sockets are what most graphs
+    # wire, and burying them under two STRINGs put the common case in the
+    # middle of the column. Reordering moves link slots, so onConfigure in
+    # framethrower.js migrates graphs saved against the old layout.
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "IMAGE", "STRING", "STRING")
     # The four image sockets carry no type suffix: Comfy already colours them by
     # type and nobody mistakes "depth" for text. The two STRING ones are marked,
     # because in Comfy "prompt" almost always means CONDITIONING — without the
     # label the first instinct is to wire it into a KSampler, which cannot take
     # it. A suffix on all six would just widen the socket column and take that
     # width off the grid.
-    RETURN_NAMES = ("image", "prompt (text)", "credit (text)", "depth", "pose", "lineart")
+    RETURN_NAMES = ("image", "depth", "pose", "lineart", "prompt (text)", "credit (text)")
     # Shown when you hover a socket, and — more usefully — the thing that tells
     # you what to plug each one into before you have plugged anything in.
     OUTPUT_TOOLTIPS = (
         "The frame itself. Into Preview Image, Save Image, or a VAE Encode / "
         "ControlNet / IPAdapter that takes an IMAGE.",
+        "Depth map. Into a depth ControlNet. Runs only while this socket is wired.",
+        "Pose skeleton, OpenPose layout. Into a pose ControlNet. Runs only while "
+        "this socket is wired, and is empty when nobody is in the frame.",
+        "Lineart. Into a lineart ControlNet. Runs only while this socket is wired.",
         "The frame's scene description, as plain text — not conditioning. "
         "Into CLIP Text Encode, which turns it into conditioning. To read it on "
-        "the canvas, add the node called 'Preview as Text'. Not a Primitive "
-        "string node: that one makes text rather than showing it, so its value "
-        "is a widget with nothing to connect to.",
+        "the canvas, add the node called 'Preview as Text'. Not a Text node: "
+        "that one makes text rather than showing it.",
         "Title, year and director, as text. Into 'Preview as Text' to read it, "
         "or 'Save Text' to write it beside the picture, so the attribution "
         "travels with whatever you make.",
-        "Depth map. Into a depth ControlNet. Runs only while this socket is wired.",
-        "DW pose skeleton. Into a pose ControlNet. Runs only while this socket is wired.",
-        "Lineart. Into a lineart ControlNet. Runs only while this socket is wired.",
     )
     # "FT" no longer appears in the display name, so it has to be searchable
     # some other way — this is the field the node search actually reads.
@@ -564,7 +568,7 @@ class FrameThrowerReference:
         wanted = _connected_outputs(prompt, unique_id) or set()
         maps = _process(pil, full, OUT_DEPTH in wanted, OUT_POSE in wanted, OUT_LINEART in wanted,
                         _strength(lineart_strength))
-        return (image, description, credit, maps["depth"], maps["pose"], maps["lineart"])
+        return (image, maps["depth"], maps["pose"], maps["lineart"], description, credit)
 
 
 NODE_CLASS_MAPPINGS = {"FrameThrowerReference": FrameThrowerReference}

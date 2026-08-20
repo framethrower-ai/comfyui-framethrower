@@ -138,7 +138,36 @@ function installDropHandler() {
 /** Every native widget, so they can all be hidden in one pass. */
 const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart", "auto", "lineart_strength"];
 // Output slot index of `lineart`, mirrored from RETURN_NAMES in nodes.py.
-const OUT_LINEART = 5;
+const OUT_LINEART = 3;
+
+// Outputs were reordered in 0.9.0 to put the four pictures first and the two
+// text sockets last. Comfy stores a link by slot *index*, so a graph saved
+// against the old layout would come back with prompt feeding a depth
+// ControlNet — silently, because two of the moved slots are the same type.
+// Old order was image, prompt, credit, depth, pose, lineart.
+const OUT_ORDER_VERSION = 2;
+const OUT_REMAP = { 0: 0, 1: 4, 2: 5, 3: 1, 4: 2, 5: 3 };
+
+function migrateOutputOrder(node) {
+    if (node.properties?.ftOutputs === OUT_ORDER_VERSION) return;
+    node.properties = node.properties || {};
+    const graph = node.graph || app.graph;
+    const outs = node.outputs || [];
+    if (outs.length === 6 && graph) {
+        const before = outs.map((o) => (o.links || []).slice());
+        outs.forEach((o) => { o.links = []; });
+        before.forEach((links, oldSlot) => {
+            const slot = OUT_REMAP[oldSlot];
+            if (slot == null || !outs[slot]) return;
+            for (const id of links) {
+                const link = graph.links?.[id];
+                if (link) link.origin_slot = slot;
+                outs[slot].links.push(id);
+            }
+        });
+    }
+    node.properties.ftOutputs = OUT_ORDER_VERSION;
+}
 
 // The node always searches hybrid. `description` ranks on the written
 // descriptions alone and is worse for nearly every query anyone brings to a
@@ -1359,6 +1388,9 @@ app.registerExtension({
             });
 
             installDropHandler();
+            // Born in the new order, so the migration below never touches it.
+            this.properties = this.properties || {};
+            this.properties.ftOutputs = OUT_ORDER_VERSION;
             this.size = [320, 400];
             this.serialize_widgets = true;
         };
@@ -1367,6 +1399,7 @@ app.registerExtension({
         const configure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             configure?.apply(this, arguments);
+            migrateOutputOrder(this);
             if (!this.ftUI) return;
             const raw = this.widgets?.find((w) => w.name === "pinned")?.value;
             if (raw) {

@@ -46,11 +46,13 @@ Dragging a frame out of the grid onto the canvas makes a plain `LoadImage` point
 | socket | what it is |
 |---|---|
 | `image` | the frame |
-| `prompt` | the scene description — wire straight into CLIP Text Encode |
-| `credit` | `Blade Runner (1982) — dir. Ridley Scott` |
 | `depth` | depth map |
-| `pose` | DW pose skeleton |
+| `pose` | OpenPose skeleton |
 | `lineart` | lineart |
+| `prompt (text)` | the scene description — wire straight into CLIP Text Encode |
+| `credit (text)` | `Blade Runner (1982) — dir. Ridley Scott` |
+
+Pictures first, text last: the four `IMAGE` sockets are what most graphs wire, and burying them under two strings put the common case in the middle of the column. Graphs saved before 0.9.0 are migrated on load — Comfy stores a link by slot index, so without that, `prompt` would quietly end up feeding a depth ControlNet.
 
 **To see the two text outputs, wire them into the node called `Preview as Text`** (its internal id is `PreviewAny`, so search the menu for the display name, not that). `Save Text` writes them to a file instead.
 
@@ -87,5 +89,7 @@ Searches are metered against your FrameThrower credits. The node caches on its i
 **"Not connected to FrameThrower" on execute.** The Connect panel never finished, or `FT_API_TOKEN` is set to something stale. Check `ComfyUI/user/framethrower/config.json`.
 
 **Connect says it cannot write.** Rare — it means `ComfyUI/user/` is read-only. Use `FT_API_TOKEN` instead.
+
+**Help is in the node.** Right-click it and choose Help, or use the `?` — the same text lives in `web/docs/`.
 
 MIT.
