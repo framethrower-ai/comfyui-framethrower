@@ -50,7 +50,9 @@ Dragging a frame out of the grid onto the canvas makes a plain `LoadImage` point
 | `pose` | DW pose skeleton |
 | `lineart` | lineart |
 
-**To see the two text outputs, wire them into `Preview Any`.** A Primitive string node looks like the right target and is not — it makes text rather than displaying it, so its `value` is a widget with no input socket and nothing will connect. `workflows/reference-basic.json` has all of this wired up already.
+**To see the two text outputs, wire them into the node called `Preview as Text`** (its internal id is `PreviewAny`, so search the menu for the display name, not that). `Save Text` writes them to a file instead.
+
+A Primitive string node looks like the right target and is not: it *makes* text rather than showing it, so its `value` is a widget with no input socket and the wire cannot be made at all. `workflows/reference-basic.json` has all of this connected already — load it rather than rebuilding it.
 
 **The last three run only if you wire them.** There is no toggle: the node reads the executing graph and runs a processor when something downstream is reading that socket. Each one is a real charge per image (roughly $0.0007 for depth), so the wire you can see is the only thing that spends money — no hidden switch that leaves a connected socket black.
 

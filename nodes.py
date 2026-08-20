@@ -265,12 +265,13 @@ class FrameThrowerReference:
         "The frame itself. Into Preview Image, Save Image, or a VAE Encode / "
         "ControlNet / IPAdapter that takes an IMAGE.",
         "The frame's scene description, as plain text — not conditioning. "
-        "Into CLIP Text Encode, which turns it into conditioning. To just read "
-        "it, use Preview Any — a Primitive string node cannot show it, that one "
-        "makes text rather than displaying it.",
-        "Title, year and director, as text. Into a text overlay or Save Text, "
-        "so the attribution travels with whatever you make — or Preview Any to "
-        "read it.",
+        "Into CLIP Text Encode, which turns it into conditioning. To read it on "
+        "the canvas, add the node called 'Preview as Text'. Not a Primitive "
+        "string node: that one makes text rather than showing it, so its value "
+        "is a widget with nothing to connect to.",
+        "Title, year and director, as text. Into 'Preview as Text' to read it, "
+        "or 'Save Text' to write it beside the picture, so the attribution "
+        "travels with whatever you make.",
         "Depth map. Into a depth ControlNet. Runs only while this socket is wired.",
         "DW pose skeleton. Into a pose ControlNet. Runs only while this socket is wired.",
         "Lineart. Into a lineart ControlNet. Runs only while this socket is wired.",
