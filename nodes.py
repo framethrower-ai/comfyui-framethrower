@@ -441,7 +441,12 @@ class FrameThrowerReference:
                 "lineart_strength": ("STRING", {"default": "3.0", "multiline": False}),
             },
             "optional": {
-                "query_in": ("STRING", {"forceInput": True}),
+                "query_in": ("STRING", {
+                    "forceInput": True,
+                    "tooltip": "Words to search for, from another node. Automatic — "
+                               "the grid follows the wire as you type upstream, no "
+                               "queue needed.",
+                }),
                 # Reverse search: find frames that look like this one.
                 #
                 # Only takes effect on execute, and it cannot preview in the
@@ -451,7 +456,12 @@ class FrameThrowerReference:
                 # which is why this route needs FAL_KEY and the text one does
                 # not. The browser has no copy of the tensor either way, so
                 # there is nothing the UI could show before you queue.
-                "image_in": ("IMAGE",),
+                "image_in": ("IMAGE", {
+                    "tooltip": "Find frames that look like this picture. Only on a "
+                               "run — a tensor in a graph has no URL, so it is "
+                               "uploaded at execution time. Needs FAL_KEY and "
+                               "fal-client; text search needs neither.",
+                }),
             },
             # The graph itself, so the node can see which of its outputs anyone
             # is actually using. See _connected_outputs.

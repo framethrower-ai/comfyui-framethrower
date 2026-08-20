@@ -539,6 +539,18 @@ class ReferenceBody {
         return Boolean(this.node.inputs?.find((i) => i.name === "query_in")?.link != null);
     }
 
+    /** True when something is wired into image_in.
+     *
+     *  Unlike query_in this cannot preview: /api/v1/search/image takes a URL and
+     *  fetches from FrameThrower's side, so a tensor living in the graph has to
+     *  be uploaded first, and that only happens on a run. The grid therefore has
+     *  nothing to show until you queue — which looks exactly like the node being
+     *  broken unless it says so.
+     */
+    get imageDriven() {
+        return Boolean(this.node.inputs?.find((i) => i.name === "image_in")?.link != null);
+    }
+
     /**
      * The text coming down the query_in wire, read straight off the upstream
      * node's widget.
@@ -996,6 +1008,9 @@ class ReferenceBody {
         if (this.error) return `<div class="ft-msg err">${esc(this.error)}</div>`;
         if (this.loading && !this.rows.length) return `<div class="ft-msg">Searching…</div>`;
         if (!this.rows.length) {
+            if (this.imageDriven) {
+                return `<div class="ft-msg">Wired to image_in.<br/>Queue the graph to search by picture — it cannot preview here.</div>`;
+            }
             return `<div class="ft-msg">${this.driven
                 ? "Waiting for text on query_in"
                 : "Search the library, then click a frame to use it"}</div>`;
@@ -1055,8 +1070,12 @@ class ReferenceBody {
         // text in this line it collided with the count — .ft-stat is a nowrap
         // flex row, so an inline span appearing after a search had nowhere to
         // go and sat on top of it.
-        if (this.rows.length) return `${this.rows.length} frames · click one to use it`;
-        return this.driven ? "query_in" : "";
+        if (this.imageDriven && !this.rows.length) return "image_in · queue to search";
+        if (this.rows.length) {
+            const tail = this.imageDriven ? "image_in wins on the next run" : "click one to use it";
+            return `${this.rows.length} frames · ${tail}`;
+        }
+        return this.driven ? "query_in · auto" : "";
     }
 
     /**

@@ -33,7 +33,7 @@ Two ways to pick a frame, and they behave differently on purpose.
 
 **Click one.** Type a query, watch the grid fill, click the frame you want. It pins to the top of the node and that exact frame is what executes — the search is not re-run, so a queue can never quietly hand you a different picture than the one you looked at. Clicking a pinned frame's neighbours searches for *visually similar* frames, the same as on the canvas.
 
-**Wire one.** Connect a string into `query_in` and set `index`. Nothing is pinned, so the node searches at execution time and takes result *n*. This is the mode for batches and for anything driven by another node.
+**Wire one.** Connect a string into `query_in` and set `index`. `query_in` is **automatic** — the grid follows the wire as you type on the upstream node, no queue needed. Nothing is pinned, so the node searches at execution time and takes result *n*. This is the mode for batches and for anything driven by another node.
 
 **Show the film.** Hovering a frame gives two badges. The eye finds frames that *look like* it, anywhere in the library. The shelf beside it shows every frame of the film that one came from, in the order the film runs — which similarity cannot answer, because a matching frame from another picture is a good match and the wrong answer. Scroll to page through it; the status line names the film and the x goes back to your search.
 
@@ -62,7 +62,7 @@ A Primitive string node looks like the right target and is not: it *makes* text 
 
 **`pose` still calls fal** and still needs a `FAL_KEY`, because there is no local path for it that does not drag in a new dependency — `transformers` has no pose pipeline, and onnxruntime, mediapipe and ultralytics are none of them things ComfyUI already installs. Without a key the node says so and carries on. It is cached per frame, since it is a real charge per call.
 
-`image_in` (search by picture rather than words) also needs `FAL_KEY`, plus `pip install fal-client` — FrameThrower fetches the picture by URL, so it has to be uploaded somewhere first.
+`image_in` (search by picture rather than words) **only takes effect on a run**, unlike `query_in`. A tensor living in a graph has no URL, and `/api/v1/search/image` fetches from FrameThrower's side, so the picture has to be uploaded first — which happens at execution time. The grid says so rather than sitting empty and looking broken. Needs `FAL_KEY` and `pip install fal-client`; text search needs neither.
 
 ## Search modes
 
