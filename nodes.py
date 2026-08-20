@@ -17,6 +17,8 @@ processor is a real charge and nobody should discover one on an invoice.
 import hashlib
 import json
 import io
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -67,14 +69,42 @@ def _credit(row):
     return out
 
 
+# depth-anything/v2 rather than imageutils/depth: the canvas measured it at
+# $0.00067 against $0.00261 per image for the same job.
+_FAL_ENDPOINTS = {
+    "depth": "fal-ai/image-preprocessors/depth-anything/v2",
+    "pose": "fal-ai/dwpose",
+    "lineart": "fal-ai/image-preprocessors/lineart",
+}
+
+# A cold model on fal takes about a minute to come up; the same call against a
+# warm one is a second or two. 60s sat right on top of that cold start —
+# measured 58.9s for depth — so the first run of the day timed out and the
+# socket came back black. Generous, because the failure it prevents is
+# expensive and the wait it allows is rare.
+_FAL_TIMEOUT = 180
+
+# Processed maps, keyed by (frame url, kind). The same frame wired to depth in
+# two graphs, or picked again after flipping away and back, should not pay for
+# the processor twice — it is a charge per call, not per picture.
+_map_cache = {}
+_MAP_CACHE_MAX = 128
+
+
 def _fal_process(image_url, want_depth, want_pose, want_lineart):
     """depth / DW pose / lineart via fal, same three processors the canvas uses.
 
-    Runs only what was asked for. Returns a dict of url-or-None; a failure of
-    one processor never takes the others down with it.
+    Runs only what was asked for, and runs them at the same time: they are three
+    independent HTTP calls, and doing them in sequence made a graph with all
+    three wired cost the sum of three cold starts rather than the longest one.
+    Measured 95.7s sequential against roughly the slowest single call now.
+
+    Returns a dict of url-or-None; a failure of one processor never takes the
+    others down with it.
     """
+    wanted = [k for k, w in (("depth", want_depth), ("pose", want_pose), ("lineart", want_lineart)) if w]
     out = {"depth": None, "pose": None, "lineart": None}
-    if not (want_depth or want_pose or want_lineart):
+    if not wanted:
         return out
 
     key = ft_api.config()["fal_key"]
@@ -82,37 +112,41 @@ def _fal_process(image_url, want_depth, want_pose, want_lineart):
         print("[FrameThrower] depth/pose/lineart need FAL_KEY — skipping.")
         return out
 
-    try:
-        import fal_client  # noqa: F401
-    except ImportError:
-        pass
-
     import urllib.request
-    import urllib.error
 
-    def run(endpoint):
+    def run(kind):
+        cached = _map_cache.get((image_url, kind))
+        if cached:
+            return kind, cached
+        endpoint = _FAL_ENDPOINTS[kind]
         req = urllib.request.Request(
             f"https://fal.run/{endpoint}",
             data=json.dumps({"image_url": image_url}).encode("utf-8"),
             headers={"Authorization": f"Key {key}", "Content-Type": "application/json"},
             method="POST",
         )
+        started = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=60) as res:
+            with urllib.request.urlopen(req, timeout=_FAL_TIMEOUT) as res:
                 data = json.loads(res.read().decode("utf-8"))
-            return (data.get("image") or {}).get("url")
+            url = (data.get("image") or {}).get("url")
         except Exception as exc:  # noqa: BLE001
-            print(f"[FrameThrower] {endpoint} failed: {exc}")
-            return None
+            print(f"[FrameThrower] {kind} ({endpoint}) failed after {time.time() - started:.0f}s: {exc}")
+            return kind, None
+        if url:
+            if len(_map_cache) >= _MAP_CACHE_MAX:
+                _map_cache.pop(next(iter(_map_cache)))
+            _map_cache[(image_url, kind)] = url
+        return kind, url
 
-    # depth-anything/v2 rather than imageutils/depth: the canvas measured it at
-    # $0.00067 against $0.00261 per image for the same job.
-    if want_depth:
-        out["depth"] = run("fal-ai/image-preprocessors/depth-anything/v2")
-    if want_pose:
-        out["pose"] = run("fal-ai/dwpose")
-    if want_lineart:
-        out["lineart"] = run("fal-ai/image-preprocessors/lineart")
+    if len(wanted) == 1:
+        kind, url = run(wanted[0])
+        out[kind] = url
+        return out
+
+    with ThreadPoolExecutor(max_workers=len(wanted)) as pool:
+        for kind, url in pool.map(run, wanted):
+            out[kind] = url
     return out
 
 
