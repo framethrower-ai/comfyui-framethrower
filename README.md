@@ -35,6 +35,8 @@ Two ways to pick a frame, and they behave differently on purpose.
 
 **Wire one.** Connect a string into `query_in` and set `index`. Nothing is pinned, so the node searches at execution time and takes result *n*. This is the mode for batches and for anything driven by another node.
 
+**Show the film.** Hovering a frame gives two badges. The eye finds frames that *look like* it, anywhere in the library. The shelf beside it shows every frame of the film that one came from, in the order the film runs — which similarity cannot answer, because a matching frame from another picture is a good match and the wrong answer. Scroll to page through it; the status line names the film and the x goes back to your search.
+
 Clear (the eraser) empties the node. It leaves the query alone, so results come back when you change the prompt rather than instantly repopulating.
 
 Dragging a frame out of the grid onto the canvas makes a plain `LoadImage` pointing at a real file in your input folder — useful when you want the picture to stop depending on this node at all.

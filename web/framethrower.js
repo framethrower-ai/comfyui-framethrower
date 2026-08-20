@@ -303,6 +303,7 @@ const CSS = `
 .ft-eye svg { width:11px; height:11px; }
 .ft-cell:hover .ft-eye { opacity:.85; }
 .ft-eye:hover { opacity:1; background:var(--ft-on); }
+.ft-lib { right:19px; }
 
 /* the references field — the only framed element, and the only one that grows */
 .ft-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; padding:3px;
@@ -430,6 +431,9 @@ const ICON = {
     spark: SVG('<path d="M12 3v3.2M12 17.8V21M3 12h3.2M17.8 12H21M5.6 5.6l2.3 2.3M16.1 16.1l2.3 2.3M18.4 5.6l-2.3 2.3M7.9 16.1l-2.3 2.3"/><circle cx="12" cy="12" r="2.8"/>'),
     funnel: SVG('<path d="M22 3H2l8 9.5V19l4 2v-8.5L22 3Z"/>'),
     eye: SVG('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
+    // Shelved spines rather than a building or a stack of books: at 11px in the
+    // corner of a thumbnail the only thing that survives is the vertical rhythm.
+    library: SVG('<path d="M4 4v16M8.5 4v16M13 4v16"/><path d="m17 4.6 4 15.4"/>'),
 };
 
 const esc = (s) =>
@@ -463,6 +467,8 @@ class ReferenceBody {
         this.filtersOpen = false;
         this.likeOf = null;      // the frame we are searching 'more like this' from
         this.colorOf = null;     // the hex we are searching by, if any
+        this.filmOf = null;      // the film we are listing, if any — {slug,title,year,total}
+        this.filmPage = 1;
         this.hueOf = null;
         this.enhanced = null;    // the rewritten query, when smart search fired
         this.watch = null;
@@ -757,6 +763,7 @@ class ReferenceBody {
         const mode = this.get("mode") || "hybrid";
         const key = `${q}::${mode}::${JSON.stringify(this.filters)}`;
         if (!append && key === this.lastKey && this.rows.length) return;
+        if (!append) this.filmOf = null;   // typing leaves the film listing
         if (append) {
             this.more = true;
         } else {
@@ -821,6 +828,70 @@ class ReferenceBody {
      * search wearing the same name. The words stay in the box, so one click on
      * Refresh gets them back.
      */
+    /**
+     * Every frame of the film this one came from, in the order the film runs.
+     *
+     * Deliberately not the similarity search next door. "More like this" answers
+     * "what else looks like this", which ranges across the whole library; this
+     * answers "what else is in this film", which it cannot — a similar frame
+     * from another picture is a good match and a wrong answer to the question.
+     *
+     * Paged rather than capped: a film runs to a few hundred frames, and
+     * scrolling appends the next page the same way a search does.
+     */
+    async showFilm(row, { append = false } = {}) {
+        if (!row?.slug) return;
+        if (append) { this.more = true; } else {
+            this.loading = true;
+            this.error = null;
+            this.done = false;
+            this.filmPage = 1;
+            this.filmOf = { slug: row.slug, title: row.filmTitle, year: row.year };
+            // A film listing is not the text search, and coming back to the
+            // words should re-run them rather than show a cached page.
+            this.lastKey = "";
+            this.likeOf = null;
+            this.colorOf = null;
+            this.tick(searchMs);
+        }
+        this.render();
+        try {
+            const res = await api.fetchApi("/framethrower/film", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    slug: row.slug,
+                    page: append ? this.filmPage + 1 : 1,
+                    per_page: PAGE_SIZE,
+                }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `Could not load that film (${res.status})`);
+            const rows = data.results || [];
+            if (append) {
+                this.filmPage = data.page || this.filmPage + 1;
+                const seen = new Set(this.rows.map((r) => r.id));
+                const fresh = rows.filter((r) => !seen.has(r.id));
+                if (!fresh.length) this.done = true;
+                this.rows = this.rows.concat(fresh);
+            } else {
+                this.rows = rows;
+                this.filmPage = data.page || 1;
+            }
+            if (this.filmOf) this.filmOf.total = data.total;
+            if ((data.page || 1) >= (data.totalPages || 1)) this.done = true;
+        } catch (e) {
+            if (append) this.done = true;
+            else this.error = e.message;
+        } finally {
+            this.loading = false;
+            this.more = false;
+            clearInterval(this.timer);
+            this.progress = 0;
+            this.render();
+        }
+    }
+
     async searchLike(row) {
         this.loading = true;
         this.error = null;
@@ -870,6 +941,7 @@ class ReferenceBody {
     clear() {
         this.rows = [];
         this.pinnedId = null;
+        this.filmOf = null;
         this.error = null;
         this.lastKey = "";
         this.set("pinned", "");
@@ -936,6 +1008,10 @@ class ReferenceBody {
              onerror="this.closest('.ft-cell').classList.add('bad');this.remove()"/>
         <span class="ft-bad">${esc(r.filmTitle || "unavailable")}</span>
         <button class="ft-eye" data-like="${i}" title="Find frames that look like this one">${ICON.eye}</button>
+        ${r.slug
+                        ? `<button class="ft-eye ft-lib" data-film="${i}"
+                     title="Show all ${r.frameCount ? esc(String(r.frameCount)) + " frames" : "frames"} from ${esc(r.filmTitle || "this film")}">${ICON.library}</button>`
+                        : ""}
         ${r.filmTitle || r.director
                         ? `<div class="ft-cap">${r.filmTitle ? `<b>${esc(r.filmTitle)}</b>` : ""}${r.director ? `<i>${esc(r.director)}</i>` : ""}</div>`
                         : ""}
@@ -967,6 +1043,10 @@ class ReferenceBody {
         }
         if (this.likeOf) {
             return `Like <b>${esc(this.likeOf.filmTitle || "that frame")}</b>${undo("unlike", "Back to the text search")}`;
+        }
+        if (this.filmOf) {
+            const n = this.filmOf.total ?? this.rows.length;
+            return `<b>${esc(this.filmOf.title || "Film")}</b>${this.filmOf.year ? ` · ${this.filmOf.year}` : ""} · ${n} frames${undo("unfilm", "Back to the search")}`;
         }
         if (this.colorOf) {
             return `<span class="ft-chip" style="background:${esc(this.colorOf)}"></span>${this.rows.length} frames${undo("uncolor", "Drop the colour")}`;
@@ -1126,7 +1206,10 @@ class ReferenceBody {
             scroll.onscroll = () => {
                 if (this.loading || this.more || this.done || !this.rows.length) return;
                 if (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 140) {
-                    this.search({ append: true });
+                    // A film listing pages by page number, a search by offset —
+                    // whichever produced what is on screen is what continues it.
+                    if (this.filmOf) this.showFilm(this.filmOf, { append: true });
+                    else this.search({ append: true });
                 }
             };
         }
@@ -1179,6 +1262,12 @@ class ReferenceBody {
                     this.likeOf = null;
                     this.lastKey = "";
                     this.search();
+                } else if (act === "unfilm") {
+                    this.filmOf = null;
+                    this.lastKey = "";
+                    this.done = false;
+                    if (String(this.get("query") || "").trim()) this.search();
+                    else { this.rows = []; this.render(); }
                 } else if (act === "filters") {
                     this.filtersOpen = !this.filtersOpen;
                     this.render();
@@ -1209,6 +1298,13 @@ class ReferenceBody {
                     if (!this.status_?.configured) this.checkStatus({ fresh: true });
                     else { this.lastKey = ""; this.done = false; this.search(); }
                 } else this.clear();
+                return;
+            }
+            const lib = e.target.closest("[data-film]");
+            if (lib) {
+                e.stopPropagation();
+                const row = this.rows[Number(lib.dataset.film)];
+                if (row) this.showFilm(row);
                 return;
             }
             const eye = e.target.closest("[data-like]");

@@ -14,6 +14,7 @@ import re
 import os
 import urllib.request
 import urllib.error
+import urllib.parse
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 LEGACY_CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -116,6 +117,44 @@ def _post(path, payload, token=None, base=None, timeout=60):
         raise FrameThrowerError(f"Could not reach {base}: {exc.reason}") from exc
 
 
+def _get(path, token=None, base=None, timeout=60):
+    """An authenticated GET. Same error translation as _post, because a 401 or a
+    402 means the same thing whichever verb produced it."""
+    cfg = _load_config()
+    base = base or cfg["base_url"]
+    token = token or cfg["token"]
+    if not token:
+        raise FrameThrowerError(
+            "Not connected to FrameThrower. Click Connect on the node and "
+            "approve it in the browser — no key to copy."
+        )
+    req = urllib.request.Request(
+        f"{base}{path}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "comfyui-framethrower",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:400]
+        try:
+            msg = json.loads(body).get("error") or body
+        except Exception:
+            msg = body
+        if exc.code == 401:
+            msg = "Token rejected. Sign in again."
+        if exc.code == 402:
+            msg = "Out of credits. Top up at framethrower.ai → Settings → Billing."
+        if exc.code == 404:
+            msg = "No such film."
+        raise FrameThrowerError(msg) from exc
+    except urllib.error.URLError as exc:
+        raise FrameThrowerError(f"Could not reach {base}: {exc.reason}") from exc
+
+
 # Smart search, on by default, because it is what framethrower.ai does and the
 # node should return the same references as the website for the same words.
 # Frames were embedded from full VLM sentences and people type fragments;
@@ -163,6 +202,34 @@ def _row(r):
         "director": film.get("director"),
         "year": film.get("year"),
         "description": meta.get("sceneDescription"),
+        # The film this frame came from, so the grid can offer to show the rest
+        # of it without another lookup. frameCount is what the button's tooltip
+        # promises before anything is fetched.
+        "slug": film.get("slug"),
+        "frameCount": film.get("frameCount"),
+    }
+
+
+def _film_row(r, film):
+    """One /api/v1/films/frames result.
+
+    A different shape from search: these rows carry no `film` object of their
+    own — the film is stated once in `meta` — and the description sits at the
+    top level rather than under `metadata`. Flattened to the same keys the grid
+    and nodes.py already read, so a frame from a film listing and a frame from a
+    search are interchangeable everywhere downstream.
+    """
+    directors = film.get("directors") or []
+    return {
+        "id": r.get("id"),
+        "src": r.get("thumbUrl") or r.get("imageUrl"),
+        "fullSrc": r.get("imageUrl") or r.get("thumbUrl"),
+        "filmTitle": film.get("title"),
+        "director": ", ".join(d for d in directors if d) or film.get("director"),
+        "year": film.get("year"),
+        "description": r.get("sceneDescription"),
+        "slug": film.get("slug"),
+        "frameCount": film.get("frameCount"),
     }
 
 
@@ -192,6 +259,27 @@ def search_full(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, e
             payload[key] = value
     data = _post("/api/v1/search", payload)
     return [_row(r) for r in (data.get("data") or [])], (data.get("meta") or {})
+
+
+def film_frames(slug, page=1, per_page=MAX_LIMIT):
+    """Every frame of one film, in the order the film runs.
+
+    Not a search: no query, no ranking, no embedding. It is the answer to
+    "what else is in this?", which a similarity search cannot give you — that
+    returns frames that look alike, from anywhere in the library.
+    """
+    slug = str(slug or "").strip()
+    if not slug:
+        raise FrameThrowerError("A film slug is required.")
+    qs = urllib.parse.urlencode({
+        "slug": slug,
+        "page": max(1, int(page)),
+        "per_page": min(int(per_page), MAX_LIMIT),
+    })
+    data = _get(f"/api/v1/films/frames?{qs}")
+    meta = data.get("meta") or {}
+    film = meta.get("film") or {}
+    return [_film_row(r, film) for r in (data.get("data") or [])], meta
 
 
 def search(query, limit=MAX_LIMIT, mode="hybrid", offset=0, filters=None, enhance=True, color=None):
@@ -333,6 +421,33 @@ try:
             return _web.json_response({"error": str(exc)}, status=502)
         except Exception as exc:  # noqa: BLE001 - surface anything to the node UI
             return _web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+
+    @_routes.post("/framethrower/film")
+    async def _route_film(request):
+        """Every frame of one film, paged.
+
+        Its own route rather than a flag on /search because it is not a search:
+        no query, no ranking, nothing metered as one.
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        slug = str(body.get("slug") or "").strip()
+        if not slug:
+            return _web.json_response({"error": "slug is required"}, status=400)
+        try:
+            rows, meta = film_frames(slug, page=body.get("page", 1),
+                                     per_page=body.get("per_page", MAX_LIMIT))
+        except FrameThrowerError as exc:
+            return _web.json_response({"error": str(exc)}, status=502)
+        return _web.json_response({
+            "results": rows,
+            "page": meta.get("page", 1),
+            "totalPages": meta.get("totalPages", 1),
+            "total": meta.get("total", len(rows)),
+            "film": meta.get("film") or {},
+        })
 
     @_routes.post("/framethrower/save")
     async def _route_save(request):

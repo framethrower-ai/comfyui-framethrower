@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-framethrower"
 description = "Search the FrameThrower film-still library from inside ComfyUI. Outputs the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
-version = "0.5.3"
+version = "0.6.0"
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
