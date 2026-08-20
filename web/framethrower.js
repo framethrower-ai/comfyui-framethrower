@@ -148,6 +148,22 @@ const OUT_LINEART = 3;
 const OUT_ORDER_VERSION = 2;
 const OUT_REMAP = { 0: 0, 1: 4, 2: 5, 3: 1, 4: 2, 5: 3 };
 
+// Inputs Comfy no longer defines. Removing an input from INPUT_TYPES does not
+// remove it from a node already on a canvas — LiteGraph rebuilds the node from
+// what the workflow saved, so a socket for a deleted input sits there forever,
+// wireable and doing nothing. image_in went in 0.7.0 and kept showing up.
+const LIVE_INPUTS = ["query_in"];
+
+function pruneDeadInputs(node) {
+    const graph = node.graph || app.graph;
+    for (let i = (node.inputs || []).length - 1; i >= 0; i--) {
+        const input = node.inputs[i];
+        if (LIVE_INPUTS.includes(input.name)) continue;
+        if (input.link != null && graph?.removeLink) graph.removeLink(input.link);
+        node.removeInput(i);
+    }
+}
+
 function migrateOutputOrder(node) {
     if (node.properties?.ftOutputs === OUT_ORDER_VERSION) return;
     node.properties = node.properties || {};
@@ -1388,6 +1404,7 @@ app.registerExtension({
             });
 
             installDropHandler();
+            pruneDeadInputs(this);
             // Born in the new order, so the migration below never touches it.
             this.properties = this.properties || {};
             this.properties.ftOutputs = OUT_ORDER_VERSION;
@@ -1399,6 +1416,7 @@ app.registerExtension({
         const configure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             configure?.apply(this, arguments);
+            pruneDeadInputs(this);
             migrateOutputOrder(this);
             if (!this.ftUI) return;
             const raw = this.widgets?.find((w) => w.name === "pinned")?.value;
