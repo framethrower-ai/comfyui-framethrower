@@ -111,6 +111,20 @@ def _local_depth(img):
     return _depth_pipe(img)["depth"]
 
 
+def _strength(raw, default=2.5, lo=0.5, hi=8.0):
+    """Whatever is in the widget, as a usable number.
+
+    Anything unreadable becomes the default rather than an exception: this is a
+    dial on a picture, and a graph should not fail to run because a slot holds
+    something odd. Clamped, because the widget is a plain text box now and there
+    is nothing stopping anyone typing 400.
+    """
+    try:
+        return max(lo, min(hi, float(str(raw).strip())))
+    except (TypeError, ValueError):
+        return default
+
+
 def _local_lineart(img, strength=2.5, blur=1.0):
     """Gradient magnitude, as continuous tone.
 
@@ -365,15 +379,14 @@ class FrameThrowerReference:
                 # including the colour and more-like-this searches that a plain
                 # text query cannot reproduce. See syncAuto() in framethrower.js.
                 "auto": ("STRING", {"default": "", "multiline": False}),
-                # Deliberately NOT hidden behind the node body like the others:
-                # it is the one setting with no home in the grid UI, and a
-                # control you cannot reach is worse than one that costs a row.
-                "lineart_strength": ("FLOAT", {
-                    "default": 2.5, "min": 0.5, "max": 8.0, "step": 0.1,
-                    "tooltip": "How hard the lineart socket draws. 1.0 is faint, "
-                               "2.5 reads well on most frames, past 5 the texture "
-                               "fills in. Nothing else uses it.",
-                }),
+                # A STRING holding a number, not a FLOAT, and that is deliberate.
+                # Comfy validates a FLOAT widget before the node runs, so a graph
+                # saved against an older build — one widget short — maps a saved
+                # string into this slot and the whole node refuses to execute
+                # with "couldn't be converted to FLOAT". There is nothing the
+                # node can do about that from Python. A STRING accepts whatever
+                # lands in it, and _strength() below decides what it meant.
+                "lineart_strength": ("STRING", {"default": "2.5", "multiline": False}),
             },
             "optional": {
                 "query_in": ("STRING", {"forceInput": True}),
@@ -430,7 +443,7 @@ class FrameThrowerReference:
     DESCRIPTION = "FT / FrameThrower reference frames. Search the film-still library and output the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
 
     @classmethod
-    def IS_CHANGED(cls, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength=2.5, query_in=None, image_in=None, prompt=None, unique_id=None):
+    def IS_CHANGED(cls, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength="2.5", query_in=None, image_in=None, prompt=None, unique_id=None):
         # Without this the node re-searches on every queue, and a search costs
         # credits. Hash the inputs so an unchanged node is a cache hit. The
         # connected outputs are part of the hash: wiring depth up has to
@@ -448,7 +461,7 @@ class FrameThrowerReference:
         blob = f"{query_in or query}|{mode}|{index}|{pinned}|{filters}|{smart}|{auto}|{lineart_strength}|{wanted}|{img}"
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-    def fetch(self, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength=2.5, query_in=None, image_in=None, prompt=None, unique_id=None):
+    def fetch(self, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength="2.5", query_in=None, image_in=None, prompt=None, unique_id=None):
         row = None
 
         # A frame clicked in the grid wins over the query — you looked at it and
@@ -522,7 +535,7 @@ class FrameThrowerReference:
         # Run a processor only if something downstream is reading its socket.
         wanted = _connected_outputs(prompt, unique_id) or set()
         maps = _process(pil, full, OUT_DEPTH in wanted, OUT_POSE in wanted, OUT_LINEART in wanted,
-                        lineart_strength)
+                        _strength(lineart_strength))
         return (image, description, credit, maps["depth"], maps["pose"], maps["lineart"])
 
 

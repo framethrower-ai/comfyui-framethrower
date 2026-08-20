@@ -136,7 +136,9 @@ function installDropHandler() {
 }
 
 /** Every native widget, so they can all be hidden in one pass. */
-const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart", "auto"];
+const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart", "auto", "lineart_strength"];
+// Output slot index of `lineart`, mirrored from RETURN_NAMES in nodes.py.
+const OUT_LINEART = 5;
 
 // The node always searches hybrid. `description` ranks on the written
 // descriptions alone and is worse for nearly every query anyone brings to a
@@ -992,6 +994,17 @@ class ReferenceBody {
      * the grid has caught up falls back to a live search rather than executing
      * a frame from the previous one.
      */
+    /** Is anything downstream reading the lineart socket?
+     *
+     *  The strength dial only appears while it is. It is the one setting with
+     *  no natural home in the grid, and a slider for a socket nobody has wired
+     *  is a permanent row of clutter for a thing most graphs never use. Same
+     *  rule the processors themselves follow: the wire states the intent.
+     */
+    lineartWired() {
+        return (this.node.outputs?.[OUT_LINEART]?.links || []).length > 0;
+    }
+
     syncAuto() {
         const i = Math.max(0, Number(this.get("index")) || 0);
         const row = this.rows[i] || null;
@@ -1050,10 +1063,25 @@ class ReferenceBody {
                 title="${esc(this.smartTitle())}">${ICON.spark}</button>
           <input class="ft-size" type="range" min="56" max="220" step="4"
                  value="${this.thumb}" title="Thumbnail size"/>
+          ${this.lineartWired()
+                ? `<input class="ft-size ft-la" type="range" min="0.5" max="8" step="0.1"
+                          value="${esc(String(this.get("lineart_strength") ?? "2.5"))}"
+                          title="Lineart strength — ${esc(String(this.get("lineart_strength") ?? "2.5"))}. 1 is faint, 2.5 reads well, past 5 it fills in."/>`
+                : ""}
           <button data-act="refresh" title="Search again">${ICON.refresh}</button>
           <button data-act="clear" title="Clear results" ${this.rows.length ? "" : "disabled"}>${ICON.x}</button>
         </span>
       </div>`;
+
+        const la = this.root.querySelector(".ft-la");
+        if (la) {
+            // No re-render on drag: rebuilding the whole body on every step of a
+            // slider throws away the grid's scroll position and fights the drag.
+            la.oninput = () => {
+                this.set("lineart_strength", la.value);
+                la.title = `Lineart strength — ${la.value}. 1 is faint, 2.5 reads well, past 5 it fills in.`;
+            };
+        }
 
         const input = this.root.querySelector(".ft-search input");
         if (focused && input) {
