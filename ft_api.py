@@ -16,20 +16,52 @@ import urllib.request
 import urllib.error
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-CONFIG_PATH = os.path.join(HERE, "config.json")
+LEGACY_CONFIG_PATH = os.path.join(HERE, "config.json")
 
 DEFAULT_BASE = "https://framethrower.ai"
+
+
+def _user_config_path():
+    """`ComfyUI/user/framethrower/config.json`, or None if that is unavailable.
+
+    The token cannot live in custom_nodes/ on a real install: Manager clones as
+    root in the Docker images, some deployments mount custom_nodes/ read-only,
+    and updating the node would blow the file away. ComfyUI's user/ directory is
+    writable by definition — it is where the frontend stores settings — and it
+    survives an update.
+    """
+    try:
+        import folder_paths
+
+        base = folder_paths.get_user_directory()
+    except Exception:  # noqa: BLE001 — not running inside ComfyUI
+        return None
+    if not base:
+        return None
+    return os.path.join(base, "framethrower", "config.json")
+
+
+def _config_path():
+    """The one file we read and write.
+
+    A config.json sitting next to this module still wins, so installs that
+    predate the move keep working and nobody's token silently relocates.
+    """
+    if os.path.isfile(LEGACY_CONFIG_PATH):
+        return LEGACY_CONFIG_PATH
+    return _user_config_path() or LEGACY_CONFIG_PATH
 
 
 def _load_config():
     """Env wins over config.json so a shared box can key per-process."""
     cfg = {}
-    if os.path.isfile(CONFIG_PATH):
+    path = _config_path()
+    if os.path.isfile(path):
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+            with open(path, "r", encoding="utf-8") as fh:
                 cfg = json.load(fh)
         except Exception as exc:  # a broken file should not kill the import
-            print(f"[FrameThrower] could not read config.json: {exc}")
+            print(f"[FrameThrower] could not read {path}: {exc}")
     return {
         "base_url": os.environ.get("FT_API_URL") or cfg.get("base_url") or DEFAULT_BASE,
         "token": os.environ.get("FT_API_TOKEN") or cfg.get("token") or "",
@@ -51,9 +83,9 @@ def _post(path, payload, token=None, base=None, timeout=60):
     token = token or cfg["token"]
     if not token:
         raise FrameThrowerError(
-            "No FrameThrower token. Set FT_API_TOKEN, or put it in "
-            "custom_nodes/comfyui-framethrower/config.json. Create one at "
-            "framethrower.ai → Settings → API."
+            "Not connected to FrameThrower. Click Connect on the node and "
+            "approve it in the browser — no key to copy. (A FT_API_TOKEN "
+            "environment variable also works, for headless installs.)"
         )
 
     req = urllib.request.Request(
@@ -229,21 +261,23 @@ def _save_token(token):
     Returns True, or a string describing why not. Shared by the paste route and
     the pairing route so there is exactly one place that writes a credential.
     """
+    path = _config_path()
     cfg = {}
-    if os.path.isfile(CONFIG_PATH):
+    if os.path.isfile(path):
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+            with open(path, "r", encoding="utf-8") as fh:
                 cfg = json.load(fh)
         except Exception:
             cfg = {}
     cfg["token"] = token
     cfg.setdefault("base_url", DEFAULT_BASE)
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=2)
-        os.chmod(CONFIG_PATH, 0o600)   # a credential, not a settings file
+        os.chmod(path, 0o600)   # a credential, not a settings file
     except OSError as exc:
-        return f"Could not write config.json: {exc}"
+        return f"Could not write {path}: {exc}"
     return True
 
 
@@ -398,19 +432,21 @@ try:
                 {"error": "FT_API_TOKEN is set in the environment. Unset it to sign out."},
                 status=409,
             )
+        path = _config_path()
         cfg = {}
-        if os.path.isfile(CONFIG_PATH):
+        if os.path.isfile(path):
             try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                with open(path, "r", encoding="utf-8") as fh:
                     cfg = json.load(fh)
             except Exception:
                 cfg = {}
         cfg["token"] = ""
         try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
                 json.dump(cfg, fh, indent=2)
         except OSError as exc:
-            return _web.json_response({"error": f"Could not write config.json: {exc}"}, status=500)
+            return _web.json_response({"error": f"Could not write {path}: {exc}"}, status=500)
         return _web.json_response({"ok": True})
 
     @_routes.get("/framethrower/status")

@@ -3,14 +3,24 @@ name = "comfyui-framethrower"
 description = "Search the FrameThrower film-still library from inside ComfyUI. Outputs the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
 version = "0.1.0"
 license = { text = "MIT" }
+readme = "README.md"
 requires-python = ">=3.9"
-dependencies = ["pillow", "numpy"]
+# torch, numpy and pillow all ship with ComfyUI — listing them invites a
+# resolver into an environment that is already correct. fal-client is optional
+# and only needed for image_in; the node prints why when it is missing.
+dependencies = []
+classifiers = ["License :: OSI Approved :: MIT License"]
 
 [project.urls]
-Repository = "https://github.com/leo-kadieff/comfyui-framethrower"
+Repository = "https://github.com/framethrower-ai/comfyui-framethrower"
 Documentation = "https://framethrower.ai/developers"
+BugTracker = "https://github.com/framethrower-ai/comfyui-framethrower/issues"
 
 [tool.comfy]
 PublisherId = "framethrower"
 DisplayName = "FrameThrower Reference"
 Icon = "https://framethrower.ai/favicon.ico"
+# The node body is a DOM widget over hidden native widgets — both need a
+# frontend from ComfyUI 0.3.30 (frontend 1.16) or newer.
+requires-comfyui = ">=0.3.30"
+includes = []

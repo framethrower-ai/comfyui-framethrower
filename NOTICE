@@ -1,0 +1,18 @@
+Third-party assets bundled with this node
+=========================================
+
+web/Outfit.woff2
+    Outfit, by Rodrigo Fuenzalida and Smartype.
+    Licensed under the SIL Open Font License, Version 1.1.
+    https://openfontlicense.org/open-font-license-official-text/
+    Upstream: https://github.com/Outfitio/Outfit-Fonts
+
+    Bundled rather than loaded from Google Fonts so the node renders
+    identically on an air-gapped install and makes no third-party request
+    from the ComfyUI page.
+
+Everything else in this repository is MIT — see LICENSE.
+
+Film stills returned by the FrameThrower API are not covered by either
+licence. They are reduced-resolution reference images served under the terms
+at https://framethrower.ai/legal/intended-use.

@@ -25,6 +25,27 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const NODE = "FrameThrowerReference";
+
+// The node body is one DOM widget, sized by getMinHeight/getMaxHeight, over
+// native widgets hidden with `widget.hidden`. Both landed in frontend 1.16; on
+// anything older the node draws as a stack of raw widgets with no explanation.
+// Say so once, in the console, rather than letting it look broken.
+const MIN_FRONTEND = "1.16.0";
+(function checkFrontend() {
+    const v = window.__COMFYUI_FRONTEND_VERSION__;
+    if (typeof v !== "string") return;   // too old to announce itself, or too new to care
+    const cmp = (a, b) => {
+        const x = a.split(".").map(Number), y = b.split(".").map(Number);
+        for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+        return 0;
+    };
+    if (cmp(v, MIN_FRONTEND) < 0) {
+        console.warn(
+            `[FrameThrower] ComfyUI frontend ${v} is older than ${MIN_FRONTEND}. ` +
+            `The node will render as plain widgets. Update ComfyUI.`
+        );
+    }
+})();
 // One call to /api/v1/search. Scrolling to the bottom asks for the next
 // page by offset; v1 stops ranking past 500, which is where the grid ends.
 const PAGE_SIZE = 50;

@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to config.json and fill in. config.json is gitignored. Environment variables FT_API_TOKEN / FT_API_URL / FAL_KEY override anything here.",
+  "_comment": "You do not normally need this file — click Connect on the node and approve it in the browser, and the token is written to ComfyUI/user/framethrower/config.json for you. This example is for headless installs. Copy it there (or next to this file, which still takes precedence), mode 600. Environment variables FT_API_TOKEN / FT_API_URL / FAL_KEY override anything here.",
   "base_url": "https://framethrower.ai",
   "token": "ft_your_token_here",
   "fal_key": ""
