@@ -448,15 +448,6 @@ class FrameThrowerReference:
                                "the grid follows the wire as you type upstream, no "
                                "queue needed.",
                 }),
-                # Reverse search: find frames that look like this one.
-                #
-                # Only takes effect on execute, and it cannot preview in the
-                # grid. /api/v1/search/image takes a URL and fetches it from
-                # FrameThrower's side, so a tensor sitting in a graph has to be
-                # hosted somewhere public first — the node uploads it to fal,
-                # which is why this route needs FAL_KEY and the text one does
-                # not. The browser has no copy of the tensor either way, so
-                # there is nothing the UI could show before you queue.
             },
             # The graph itself, so the node can see which of its outputs anyone
             # is actually using. See _connected_outputs.
