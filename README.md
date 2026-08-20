@@ -15,7 +15,7 @@ git clone https://github.com/framethrower-ai/comfyui-framethrower
 
 Restart. The node is under **Add Node → FrameThrower → Reference Node**.
 
-Needs ComfyUI 0.3.30 or newer. No pip install step — everything it imports already ships with ComfyUI.
+Needs ComfyUI 0.3.30 or newer. **No pip install step and no API keys for anything but your FrameThrower account** — everything it imports already ships with ComfyUI, and depth, pose and lineart all run on your own machine.
 
 ## Connect
 
@@ -60,7 +60,7 @@ A Primitive string node looks like the right target and is not: it *makes* text 
 
 **`depth` and `lineart` run on your machine.** No key, no network call, nothing per image. Depth is Depth-Anything-V2-Small through the `transformers` pipeline that already ships with ComfyUI, on whichever device ComfyUI chose; the weights (~100MB) download once on first use. Lineart is a gradient magnitude kept only on the one-pixel spine of each edge, so lines stay thin without going flat — a firm edge comes out brighter than a faint one. A slider appears in the node's footer once the `lineart` socket is wired — hidden until then, because a dial for a socket nobody is reading is permanent clutter. It sets **how much detail** survives: low is sparse and structural, high picks up fine texture. **3.0** is the default. Anything unreadable in that slot falls back to it rather than refusing to run. Measured on an M-series GPU: **65ms for depth, against 58.9s on a cold fal model** for output that looks the same.
 
-**`pose` is the only thing that calls out.** It goes to fal and still needs a `FAL_KEY`, because there is no local path for it that does not drag in a new dependency — `transformers` has no pose pipeline, and onnxruntime, mediapipe and ultralytics are none of them things ComfyUI already installs. Without a key the node says so and carries on. It is cached per frame, since it is a real charge per call.
+**`pose` runs locally too.** A small detector finds the people, ViTPose finds the joints inside each, and the skeleton is rendered in OpenPose's own layout and colours — which is what the openpose ControlNets were trained on. Both models come from `transformers`, so still no new dependency; the weights download once. A frame with nobody in it returns the black pixel and says so in the log rather than pretending. Measured at 63ms on an M-series GPU for five people, against 1.97s on a warm fal model and about a minute on a cold one.
 
 ## Search modes
 

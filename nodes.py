@@ -17,8 +17,6 @@ processor is a real charge and nobody should discover one on an invoice.
 import hashlib
 import json
 import io
-import time
-from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -204,6 +202,114 @@ def _local_lineart(img, strength=3.0):
     return Image.fromarray((lines * 255).astype(np.uint8)).convert("RGB")
 
 
+# ── local pose ───────────────────────────────────────────────────────────────
+#
+# Two models, both from transformers, so still no new dependency: a small
+# detector for person boxes and ViTPose for the joints inside each. Measured on
+# MPS at 63ms for five people, against 1.97s on a warm fal dwpose and a minute
+# on a cold one.
+#
+# There is no `pose-estimation` pipeline, which is what made this look
+# impossible at first glance — the models are there, the convenience wrapper is
+# not.
+DETECT_MODEL = "hustvl/yolos-tiny"          # ~26MB, only has to find people
+POSE_MODEL = "usyd-community/vitpose-base-simple"
+_pose_models = None
+
+# COCO's 17 joints in the order OpenPose draws its 18, with the neck — which
+# COCO does not label — taken as the midpoint of the shoulders. ControlNet's
+# openpose models were trained on OpenPose renderings, so matching the layout
+# and the colours is the difference between a useful hint and a confusing one.
+_COCO_TO_OP = [0, None, 6, 8, 10, 5, 7, 9, 12, 14, 16, 11, 13, 15, 2, 1, 4, 3]
+_LIMBS = [(1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (1, 8), (8, 9),
+          (9, 10), (1, 11), (11, 12), (12, 13), (1, 0), (0, 14), (14, 16),
+          (0, 15), (15, 17)]
+_COLORS = [(255, 0, 0), (255, 85, 0), (255, 170, 0), (255, 255, 0), (170, 255, 0),
+           (85, 255, 0), (0, 255, 0), (0, 255, 85), (0, 255, 170), (0, 255, 255),
+           (0, 170, 255), (0, 85, 255), (0, 0, 255), (85, 0, 255), (170, 0, 255),
+           (255, 0, 255), (255, 0, 170), (255, 0, 85)]
+_KP_MIN = 0.3   # below this a joint is a guess, and a drawn guess is a wrong hint
+
+
+def _load_pose_models():
+    global _pose_models
+    if _pose_models is None:
+        from transformers import (AutoProcessor, AutoModelForObjectDetection,
+                                  VitPoseForPoseEstimation, VitPoseImageProcessor)
+
+        dev = _torch_device()
+        print(f"[FrameThrower] loading pose models on {dev} — one-off, then cached on disk")
+        dproc = AutoProcessor.from_pretrained(DETECT_MODEL)
+        dmodel = AutoModelForObjectDetection.from_pretrained(DETECT_MODEL).to(dev).eval()
+        pproc = VitPoseImageProcessor.from_pretrained(POSE_MODEL)
+        pmodel = VitPoseForPoseEstimation.from_pretrained(POSE_MODEL).to(dev).eval()
+        _pose_models = (dproc, dmodel, pproc, pmodel, dev)
+    return _pose_models
+
+
+def _local_pose(img):
+    """An OpenPose-style skeleton on black, or None when nobody is in the frame.
+
+    None rather than an empty black image on purpose: "no people here" and "the
+    processor failed" should not look identical downstream, and the caller turns
+    None into the same single black pixel every unwired socket gets.
+    """
+    import cv2
+
+    dproc, dmodel, pproc, pmodel, dev = _load_pose_models()
+
+    with torch.no_grad():
+        di = dproc(images=img, return_tensors="pt").to(dev)
+        det = dmodel(**di)
+    sizes = torch.tensor([[img.height, img.width]])
+    found = dproc.post_process_object_detection(det, target_sizes=sizes, threshold=0.5)[0]
+    boxes = [
+        [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+        for box, label in zip(found["boxes"], found["labels"])
+        for x1, y1, x2, y2 in [box.tolist()]
+        if dmodel.config.id2label[int(label)] == "person" and x2 > x1 and y2 > y1
+    ]
+    if not boxes:
+        return None
+
+    with torch.no_grad():
+        pi = pproc(img, boxes=[boxes], return_tensors="pt").to(dev)
+        po = pmodel(**pi)
+    people = pproc.post_process_pose_estimation(po, boxes=[boxes])[0]
+
+    canvas = np.zeros((img.height, img.width, 3), dtype=np.uint8)
+    for person in people:
+        kp = person["keypoints"].cpu().numpy()
+        sc = person["scores"].cpu().numpy()
+
+        pts, ok = [], []
+        for op_i, coco_i in enumerate(_COCO_TO_OP):
+            if coco_i is None:                      # the neck, from the shoulders
+                if sc[5] >= _KP_MIN and sc[6] >= _KP_MIN:
+                    pts.append(((kp[5] + kp[6]) / 2.0)); ok.append(True)
+                else:
+                    pts.append(np.zeros(2)); ok.append(False)
+            else:
+                pts.append(kp[coco_i]); ok.append(bool(sc[coco_i] >= _KP_MIN))
+
+        # Limbs as filled ellipses along the bone rather than plain lines: that
+        # is what OpenPose renders and what the ControlNets were trained on.
+        for i, (a, b) in enumerate(_LIMBS):
+            if not (ok[a] and ok[b]):
+                continue
+            ax, ay = pts[a]; bx, by = pts[b]
+            mx, my = (ax + bx) / 2.0, (ay + by) / 2.0
+            length = float(np.hypot(ax - bx, ay - by))
+            angle = float(np.degrees(np.arctan2(ay - by, ax - bx)))
+            poly = cv2.ellipse2Poly((int(mx), int(my)), (int(length / 2), 4), int(angle), 0, 360, 1)
+            cv2.fillConvexPoly(canvas, poly, _COLORS[i % len(_COLORS)])
+        for i, (p, good) in enumerate(zip(pts, ok)):
+            if good:
+                cv2.circle(canvas, (int(p[0]), int(p[1])), 4, _COLORS[i % len(_COLORS)], -1)
+
+    return Image.fromarray(canvas)
+
+
 def _credit(row):
     """The line the canvas burns into a collage — title, year, director."""
     title = row.get("filmTitle") or "Untitled"
@@ -215,97 +321,34 @@ def _credit(row):
     return out
 
 
-_FAL_POSE = "fal-ai/dwpose"
-
-# A cold model on fal takes about a minute to come up; the same call against a
-# warm one is a second or two. 60s sat right on top of that cold start —
-# measured 58.9s for depth — so the first run of the day timed out and the
-# socket came back black. Generous, because the failure it prevents is
-# expensive and the wait it allows is rare.
-_FAL_TIMEOUT = 180
-
-# Processed maps, keyed by (frame url, kind). The same frame wired to depth in
-# two graphs, or picked again after flipping away and back, should not pay for
-# the processor twice — it is a charge per call, not per picture.
-_map_cache = {}
-_MAP_CACHE_MAX = 128
-
-
-def _fal_pose(image_url):
-    """DW pose, still on fal — there is no local path for it without a new
-    dependency. transformers has no pose pipeline, and onnxruntime / mediapipe /
-    ultralytics are none of them things ComfyUI already installs, so doing this
-    on-device would mean a package and a model download for one socket.
-
-    Everything about the cold start applies: the model takes about a minute to
-    come up and about two seconds once warm, which is why the timeout is
-    generous. Cached per frame, because it is a charge per call.
-    """
-    cached = _map_cache.get((image_url, "pose"))
-    if cached:
-        return cached
-
-    key = ft_api.config()["fal_key"]
-    if not key:
-        print("[FrameThrower] pose still runs on fal and needs FAL_KEY — skipping. "
-              "depth and lineart are local and need nothing.")
-        return None
-
-    import urllib.request
-
-    req = urllib.request.Request(
-        f"https://fal.run/{_FAL_POSE}",
-        data=json.dumps({"image_url": image_url}).encode("utf-8"),
-        headers={"Authorization": f"Key {key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    started = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=_FAL_TIMEOUT) as res:
-            data = json.loads(res.read().decode("utf-8"))
-        url = (data.get("image") or {}).get("url")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[FrameThrower] pose ({_FAL_POSE}) failed after {time.time() - started:.0f}s: {exc}")
-        return None
-    if url:
-        if len(_map_cache) >= _MAP_CACHE_MAX:
-            _map_cache.pop(next(iter(_map_cache)))
-        _map_cache[(image_url, "pose")] = url
-    return url
-
-
 def _process(img, image_url, want_depth, want_pose, want_lineart, lineart_strength=3.0):
     """The three maps, as tensors. Runs only what something downstream reads.
 
-    depth and lineart are local and fast enough that there is nothing to
-    parallelise; pose is a network call and goes first so it overlaps them.
+    All three are local now, so there is no network call to hide behind a
+    thread and no key to check first. `image_url` is kept in the signature
+    because the caller has it and a cache keyed on the frame is the obvious
+    next step if any of these ever gets slow.
     """
     out = {"depth": _BLANK, "pose": _BLANK, "lineart": _BLANK}
-    pose_job = None
-    pool = None
-    try:
-        if want_pose:
-            pool = ThreadPoolExecutor(max_workers=1)
-            pose_job = pool.submit(_fal_pose, image_url)
-
-        if want_depth:
-            try:
-                out["depth"] = _to_tensor(_local_depth(img))
-            except Exception as exc:  # noqa: BLE001
-                print(f"[FrameThrower] local depth failed: {exc}")
-        if want_lineart:
-            try:
-                out["lineart"] = _to_tensor(_local_lineart(img, lineart_strength))
-            except Exception as exc:  # noqa: BLE001
-                print(f"[FrameThrower] local lineart failed: {exc}")
-
-        if pose_job is not None:
-            url = pose_job.result()
-            if url:
-                out["pose"] = _load_image(url)
-    finally:
-        if pool is not None:
-            pool.shutdown(wait=True)
+    if want_depth:
+        try:
+            out["depth"] = _to_tensor(_local_depth(img))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[FrameThrower] local depth failed: {exc}")
+    if want_lineart:
+        try:
+            out["lineart"] = _to_tensor(_local_lineart(img, lineart_strength))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[FrameThrower] local lineart failed: {exc}")
+    if want_pose:
+        try:
+            skeleton = _local_pose(img)
+            if skeleton is None:
+                print("[FrameThrower] no people in this frame — pose is empty.")
+            else:
+                out["pose"] = _to_tensor(skeleton)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[FrameThrower] local pose failed: {exc}")
     return out
 
 
