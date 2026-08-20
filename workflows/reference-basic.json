@@ -22,12 +22,6 @@
           "type": "STRING",
           "link": null,
           "shape": 7
-        },
-        {
-          "name": "image_in",
-          "type": "IMAGE",
-          "link": null,
-          "shape": 7
         }
       ],
       "outputs": [
