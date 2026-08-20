@@ -1065,8 +1065,8 @@ class ReferenceBody {
                  value="${this.thumb}" title="Thumbnail size"/>
           ${this.lineartWired()
                 ? `<input class="ft-size ft-la" type="range" min="0.5" max="8" step="0.1"
-                          value="${esc(String(this.get("lineart_strength") ?? "2.5"))}"
-                          title="Lineart strength — ${esc(String(this.get("lineart_strength") ?? "2.5"))}. 1 is faint, 2.5 reads well, past 5 it fills in."/>`
+                          value="${esc(String(this.get("lineart_strength") ?? "3.0"))}"
+                          title="Lineart strength — ${esc(String(this.get("lineart_strength") ?? "3.0"))}. 1 is faint, 3 is the default, past 6 it fills in."/>`
                 : ""}
           <button data-act="refresh" title="Search again">${ICON.refresh}</button>
           <button data-act="clear" title="Clear results" ${this.rows.length ? "" : "disabled"}>${ICON.x}</button>
@@ -1079,7 +1079,7 @@ class ReferenceBody {
             // slider throws away the grid's scroll position and fights the drag.
             la.oninput = () => {
                 this.set("lineart_strength", la.value);
-                la.title = `Lineart strength — ${la.value}. 1 is faint, 2.5 reads well, past 5 it fills in.`;
+                la.title = `Lineart strength — ${la.value}. 1 is faint, 3 is the default, past 6 it fills in.`;
             };
         }
 

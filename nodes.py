@@ -111,7 +111,7 @@ def _local_depth(img):
     return _depth_pipe(img)["depth"]
 
 
-def _strength(raw, default=2.5, lo=0.5, hi=8.0):
+def _strength(raw, default=3.0, lo=0.5, hi=8.0):
     """Whatever is in the widget, as a usable number.
 
     Anything unreadable becomes the default rather than an exception: this is a
@@ -125,30 +125,47 @@ def _strength(raw, default=2.5, lo=0.5, hi=8.0):
         return default
 
 
-def _local_lineart(img, strength=2.5, blur=1.0):
-    """Gradient magnitude, as continuous tone.
+def _local_lineart(img, strength=3.0, blur=0.6):
+    """Edge ridges, carrying the gradient's weight.
 
     A filter, not a network: nothing to download and a few milliseconds to run.
     White lines on black, the polarity a lineart ControlNet expects and the one
     fal returned, so a graph does not invert when it switches over.
 
-    Canny was here first and read as vague. It is a binary detector — every line
-    is one pixel wide and equally bright, so a firm edge and a faint one arrive
-    identical and the picture loses its weight. A Sobel magnitude keeps the
-    gradient, so strong edges come out strong.
+    Two earlier versions, and what each got wrong, because the fix is the
+    combination of them:
 
-    Normalised against the 99.5th percentile rather than the maximum: a single
-    blown highlight or a dust speck would otherwise set the scale and drag
-    everything else towards black. `strength` then multiplies it, which is what
-    the widget on the node drives — 1.0 is faint, 2.5 reads well on the frames
-    measured, past about 5 the texture fills in and detail is lost.
+    Canny alone read as vague. It is binary — every line is one pixel wide and
+    equally bright, so a firm edge and a faint one arrive identical and the
+    picture loses its weight.
+
+    Sobel magnitude alone read as thick. A gradient does not stop at the edge,
+    it ramps across it, so every line came out several pixels of smear.
+
+    So: take the magnitude for its weight, and keep only the pixels Canny marks.
+    Canny's first step is non-maximum suppression, which is exactly the
+    one-pixel spine of each edge — multiplying the two gives thin lines that are
+    still bright where the edge is strong. Measured density on the test frame
+    fell from 0.266 to 0.140 at a comparable brightness.
+
+    Magnitude is normalised against the 99.5th percentile rather than the
+    maximum: one blown highlight or a dust speck would otherwise set the scale
+    and drag everything else towards black. Canny's thresholds come off the
+    median, because film stills are not uniformly exposed — the frames measured
+    sit at median 18 for a night exterior and 54 for a daylight wide.
     """
     import cv2
 
-    g = cv2.GaussianBlur(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0, (0, 0), blur)
+    g8 = cv2.GaussianBlur(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY), (0, 0), blur)
+    g = g8.astype(np.float32) / 255.0
+
     m = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3))
     m /= float(np.percentile(m, 99.5)) + 1e-6
-    lines = np.clip(m * float(strength), 0.0, 1.0)
+
+    v = float(np.median(g8))
+    ridge = cv2.Canny(g8, int(max(0, 0.5 * v)), int(min(255, 1.5 * v))) > 0
+
+    lines = np.clip(m * float(strength), 0.0, 1.0) * ridge
     return Image.fromarray((lines * 255).astype(np.uint8)).convert("RGB")
 
 
@@ -222,7 +239,7 @@ def _fal_pose(image_url):
     return url
 
 
-def _process(img, image_url, want_depth, want_pose, want_lineart, lineart_strength=2.5):
+def _process(img, image_url, want_depth, want_pose, want_lineart, lineart_strength=3.0):
     """The three maps, as tensors. Runs only what something downstream reads.
 
     depth and lineart are local and fast enough that there is nothing to
@@ -386,7 +403,7 @@ class FrameThrowerReference:
                 # with "couldn't be converted to FLOAT". There is nothing the
                 # node can do about that from Python. A STRING accepts whatever
                 # lands in it, and _strength() below decides what it meant.
-                "lineart_strength": ("STRING", {"default": "2.5", "multiline": False}),
+                "lineart_strength": ("STRING", {"default": "3.0", "multiline": False}),
             },
             "optional": {
                 "query_in": ("STRING", {"forceInput": True}),
@@ -443,7 +460,7 @@ class FrameThrowerReference:
     DESCRIPTION = "FT / FrameThrower reference frames. Search the film-still library and output the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
 
     @classmethod
-    def IS_CHANGED(cls, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength="2.5", query_in=None, image_in=None, prompt=None, unique_id=None):
+    def IS_CHANGED(cls, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength="3.0", query_in=None, image_in=None, prompt=None, unique_id=None):
         # Without this the node re-searches on every queue, and a search costs
         # credits. Hash the inputs so an unchanged node is a cache hit. The
         # connected outputs are part of the hash: wiring depth up has to
@@ -461,7 +478,7 @@ class FrameThrowerReference:
         blob = f"{query_in or query}|{mode}|{index}|{pinned}|{filters}|{smart}|{auto}|{lineart_strength}|{wanted}|{img}"
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-    def fetch(self, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength="2.5", query_in=None, image_in=None, prompt=None, unique_id=None):
+    def fetch(self, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength="3.0", query_in=None, image_in=None, prompt=None, unique_id=None):
         row = None
 
         # A frame clicked in the grid wins over the query — you looked at it and
