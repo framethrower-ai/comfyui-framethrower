@@ -21,6 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Publish
-        uses: Comfy-Org/publish-node-action@v1
+        # Pinned to a release tag on purpose. Comfy-Org document `@v1`, but that
+        # is a mutable *branch* — anything landing on it would run with a token
+        # that can publish under our registry name. Bump this deliberately.
+        uses: Comfy-Org/publish-node-action@1.0.1
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+          skip_checkout: "true"   # checked out above
