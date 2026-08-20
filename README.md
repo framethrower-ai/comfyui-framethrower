@@ -50,6 +50,8 @@ Dragging a frame out of the grid onto the canvas makes a plain `LoadImage` point
 | `pose` | DW pose skeleton |
 | `lineart` | lineart |
 
+**To see the two text outputs, wire them into `Preview Any`.** A Primitive string node looks like the right target and is not — it makes text rather than displaying it, so its `value` is a widget with no input socket and nothing will connect. `workflows/reference-basic.json` has all of this wired up already.
+
 **The last three run only if you wire them.** There is no toggle: the node reads the executing graph and runs a processor when something downstream is reading that socket. Each one is a real charge per image (roughly $0.0007 for depth), so the wire you can see is the only thing that spends money — no hidden switch that leaves a connected socket black.
 
 They need a `FAL_KEY`, in the environment or in the config file. Without one the node prints why and carries on; text search never needs it. Unwired, a socket outputs a single black pixel rather than nothing: Comfy has no null on an `IMAGE` socket, and one black pixel fails loudly instead of silently passing the wrong picture downstream.
