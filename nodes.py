@@ -82,6 +82,9 @@ def _load_image(url):
 # transformers ships with ComfyUI, so this adds no dependency. The weights
 # (~100MB) download once on first use and are cached by huggingface_hub.
 DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
+
+# Sobel magnitude on 8-bit grey below which an edge is film grain, not content.
+NOISE_FLOOR = 12.0
 _depth_pipe = None
 
 
@@ -157,27 +160,45 @@ def _local_lineart(img, strength=3.0):
     import cv2
 
     # The slider is detail, not brightness. Turning the gain down only dimmed a
-    # picture that was too busy, which is not the same complaint. Raising the
-    # Canny thresholds did not work either — measured 0.115 down to only 0.080
-    # across a 6x threshold sweep, because foliage and fabric are genuinely
-    # high-contrast and survive any threshold you can set.
-    #
-    # Scale is the lever that works. Blurring before the gradient removes fine
-    # texture and keeps structure, so the dial drives blur downwards as it goes
-    # up, with a little gain alongside so the sparse end does not also read as
-    # dim. On the test frame: 0.029 at 0.5, 0.058 at the default, 0.146 at 8.
+    # picture that was too busy, which is not the same complaint.
     detail = float(strength)
     blur = max(0.4, min(3.4, 3.4 - 0.45 * detail))
     gain = 2.4 + 0.2 * detail
 
     g8 = cv2.GaussianBlur(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY), (0, 0), blur)
-    g = g8.astype(np.float32) / 255.0
 
-    m = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3))
-    m /= float(np.percentile(m, 99.5)) + 1e-6
+    # Thresholds come off the gradient, not the brightness.
+    #
+    # They used to be a fraction of the median grey level, which is the standard
+    # auto-Canny trick and is wrong for film. Brightness says nothing about edge
+    # strength: a fog exterior at median 155 got thresholds of 77/232, which are
+    # enormous in gradient terms, so Canny found exactly zero edges and the
+    # socket returned a black frame. Three of five soft-lit frames tested failed
+    # that way.
+    #
+    # A pure percentile is the opposite failure — it promises a fixed share of
+    # pixels will be edges, so a featureless frame returns 5% of itself as
+    # sensor noise contours. Measured: the Quintet fog frame came back as pure
+    # grain.
+    #
+    # So: a percentile, floored. NOISE_FLOOR is in Sobel units on 8-bit grey,
+    # below which a gradient is film grain rather than anything in the shot —
+    # the frames measured sit at a median gradient of 1.4 to 4.0 where a normal
+    # frame is 13. At 12 the four figures in The Grey's whiteout come through
+    # with the horizon and nothing else, the Quintet fog gives its horizon line
+    # only, and every ordinary frame is untouched because its percentile is far
+    # above the floor.
+    gx = cv2.Sobel(g8, cv2.CV_16S, 1, 0, ksize=3)
+    gy = cv2.Sobel(g8, cv2.CV_16S, 0, 1, ksize=3)
+    mag = np.hypot(gx.astype(np.float32), gy.astype(np.float32))
 
-    v = float(np.median(g8))
-    ridge = cv2.Canny(g8, int(max(0, 0.5 * v)), int(min(255, 1.5 * v))) > 0
+    hi = max(NOISE_FLOOR, float(np.percentile(mag, 95.0)))
+    lo = max(1.0, 0.4 * hi)
+    ridge = cv2.Canny(gx, gy, lo, hi, L2gradient=True) > 0
+
+    # Same floor on the normaliser: without it a frame whose brightest gradient
+    # is grain would have that grain scaled up to full white.
+    m = mag / (max(float(np.percentile(mag, 99.5)), NOISE_FLOOR) + 1e-6)
 
     lines = np.clip(m * gain, 0.0, 1.0) * ridge
     return Image.fromarray((lines * 255).astype(np.uint8)).convert("RGB")
