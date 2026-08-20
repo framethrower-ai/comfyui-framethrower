@@ -232,6 +232,12 @@ class FrameThrowerReference:
                 # while the queued graph did not would hand you a different
                 # frame than the one you clicked.
                 "smart": ("BOOLEAN", {"default": True}),
+                # What the grid is showing at `index` right now, written by the
+                # node's own UI. Not something to type into: it is how a run
+                # with nothing clicked executes the frame you can actually see,
+                # including the colour and more-like-this searches that a plain
+                # text query cannot reproduce. See syncAuto() in framethrower.js.
+                "auto": ("STRING", {"default": "", "multiline": False}),
             },
             "optional": {
                 "query_in": ("STRING", {"forceInput": True}),
@@ -288,7 +294,7 @@ class FrameThrowerReference:
     DESCRIPTION = "FT / FrameThrower reference frames. Search the film-still library and output the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
 
     @classmethod
-    def IS_CHANGED(cls, query, mode, index, pinned, filters="", smart=True, query_in=None, image_in=None, prompt=None, unique_id=None):
+    def IS_CHANGED(cls, query, mode, index, pinned, filters="", smart=True, auto="", query_in=None, image_in=None, prompt=None, unique_id=None):
         # Without this the node re-searches on every queue, and a search costs
         # credits. Hash the inputs so an unchanged node is a cache hit. The
         # connected outputs are part of the hash: wiring depth up has to
@@ -303,10 +309,10 @@ class FrameThrowerReference:
                 img = hashlib.sha256(image_in[0].cpu().numpy().tobytes()).hexdigest()[:16]
             except Exception:
                 img = "image"
-        blob = f"{query_in or query}|{mode}|{index}|{pinned}|{filters}|{smart}|{wanted}|{img}"
+        blob = f"{query_in or query}|{mode}|{index}|{pinned}|{filters}|{smart}|{auto}|{wanted}|{img}"
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-    def fetch(self, query, mode, index, pinned, filters="", smart=True, query_in=None, image_in=None, prompt=None, unique_id=None):
+    def fetch(self, query, mode, index, pinned, filters="", smart=True, auto="", query_in=None, image_in=None, prompt=None, unique_id=None):
         row = None
 
         # A frame clicked in the grid wins over the query — you looked at it and
@@ -329,8 +335,26 @@ class FrameThrowerReference:
                 raise ValueError(f"index {index} is past the {len(results)} results for that image.")
             row = results[index]
 
+        text = (query_in or query or "").strip()
+
+        # Nothing clicked, but the grid is showing something — run that. The
+        # first result is what `index` points at, so this is "pick the first one
+        # unless you said otherwise", and it holds for colour and more-like-this
+        # searches, which a text query cannot re-express.
+        #
+        # Only while the words still agree: an edited query with a stale grid
+        # must fall through to a live search rather than execute the frame from
+        # the previous one.
+        if row is None and auto:
+            try:
+                blob = json.loads(auto)
+            except json.JSONDecodeError:
+                blob = None
+            if isinstance(blob, dict) and isinstance(blob.get("row"), dict):
+                if str(blob.get("q") or "") == text:
+                    row = blob["row"]
+
         if row is None:
-            text = (query_in or query or "").strip()
             if not text:
                 raise ValueError(
                     "Reference node has no query. Type one, wire a string into "

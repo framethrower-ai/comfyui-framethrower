@@ -136,7 +136,7 @@ function installDropHandler() {
 }
 
 /** Every native widget, so they can all be hidden in one pass. */
-const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart"];
+const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart", "auto"];
 
 // The node always searches hybrid. `description` ranks on the written
 // descriptions alone and is worse for nearly every query anyone brings to a
@@ -977,7 +977,30 @@ class ReferenceBody {
         return this.driven ? "query_in" : "";
     }
 
+    /**
+     * Mirror whatever the grid is currently showing at `index` into a widget,
+     * so a run with nothing clicked executes the frame you can see.
+     *
+     * Execution used to fall back to re-running a *text* search. The grid can
+     * show things a text search cannot express — a colour picked off the hue
+     * bar, a more-like-this — and it can show them with the query box empty.
+     * So queueing without clicking either failed outright ("no query") or,
+     * worse, quietly ran a different picture than the one on screen.
+     *
+     * The query the grid searched travels with the row. Python only trusts the
+     * row while that still matches, so retyping the query and queueing before
+     * the grid has caught up falls back to a live search rather than executing
+     * a frame from the previous one.
+     */
+    syncAuto() {
+        const i = Math.max(0, Number(this.get("index")) || 0);
+        const row = this.rows[i] || null;
+        const q = String(this.get("query") || "").trim();
+        this.set("auto", row ? JSON.stringify({ q, row }) : "");
+    }
+
     render() {
+        this.syncAuto();
         const keep = this.root.querySelector(".ft-scroll")?.scrollTop || 0;
         const focused = this.root.querySelector(".ft-search input") === document.activeElement;
         const caret = focused ? this.root.querySelector(".ft-search input").selectionStart : null;
