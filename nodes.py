@@ -180,6 +180,16 @@ def _connected_outputs(prompt, unique_id):
     """
     if not prompt or unique_id is None:
         return None
+    if not isinstance(prompt, dict):
+        # Was silent for a while: `fetch` rebound `prompt` to the scene
+        # description, this raised AttributeError into the catch-all below, and
+        # every processor stayed off with only a vague line in the log. A wrong
+        # type here is a bug in this file, so say which one.
+        print(
+            f"[FrameThrower] PROMPT graph arrived as {type(prompt).__name__}, not dict — "
+            "depth/pose/lineart cannot be resolved. This is a bug, please report it."
+        )
+        return None
     me = str(unique_id)
     used = set()
     try:
@@ -337,7 +347,11 @@ class FrameThrowerReference:
 
         full = row.get("fullSrc") or row.get("src")
         image = _load_image(full)
-        prompt = row.get("description") or ""
+        # NOT `prompt` — that name is the hidden PROMPT graph, and rebinding it
+        # here left _connected_outputs reading a description string. It caught
+        # the AttributeError, returned None, and depth/pose/lineart came out
+        # black no matter how they were wired.
+        description = row.get("description") or ""
         credit = _credit(row)
 
         # Run a processor only if something downstream is reading its socket.
@@ -345,7 +359,7 @@ class FrameThrowerReference:
         maps = _fal_process(full, OUT_DEPTH in wanted, OUT_POSE in wanted, OUT_LINEART in wanted)
         return (
             image,
-            prompt,
+            description,
             credit,
             _load_image(maps["depth"]) if maps["depth"] else _BLANK,
             _load_image(maps["pose"]) if maps["pose"] else _BLANK,
