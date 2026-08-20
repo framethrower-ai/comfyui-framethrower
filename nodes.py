@@ -111,28 +111,31 @@ def _local_depth(img):
     return _depth_pipe(img)["depth"]
 
 
-def _local_lineart(img, spread=0.33):
-    """Edges, with the thresholds taken from the picture rather than fixed.
+def _local_lineart(img, strength=2.5, blur=1.0):
+    """Gradient magnitude, as continuous tone.
 
     A filter, not a network: nothing to download and a few milliseconds to run.
     White lines on black, the polarity a lineart ControlNet expects and the one
     fal returned, so a graph does not invert when it switches over.
 
-    The thresholds come off the median because film stills are not uniformly
-    exposed — a night exterior sits around 18 and a daylight wide around 54 on
-    the frames measured, and any fixed pair of numbers blows out one and finds
-    nothing in the other. XDoG was tried first and failed exactly here: its
-    epsilon is absolute, so a threshold tuned on a lit frame returned a black
-    rectangle for a dark one.
+    Canny was here first and read as vague. It is a binary detector — every line
+    is one pixel wide and equally bright, so a firm edge and a faint one arrive
+    identical and the picture loses its weight. A Sobel magnitude keeps the
+    gradient, so strong edges come out strong.
+
+    Normalised against the 99.5th percentile rather than the maximum: a single
+    blown highlight or a dust speck would otherwise set the scale and drag
+    everything else towards black. `strength` then multiplies it, which is what
+    the widget on the node drives — 1.0 is faint, 2.5 reads well on the frames
+    measured, past about 5 the texture fills in and detail is lost.
     """
     import cv2
 
-    g = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
-    g = cv2.GaussianBlur(g, (0, 0), 1.0)
-    v = float(np.median(g))
-    lo = int(max(0, (1.0 - spread) * v))
-    hi = int(min(255, (1.0 + spread) * v))
-    return Image.fromarray(cv2.Canny(g, lo, hi)).convert("RGB")
+    g = cv2.GaussianBlur(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0, (0, 0), blur)
+    m = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3))
+    m /= float(np.percentile(m, 99.5)) + 1e-6
+    lines = np.clip(m * float(strength), 0.0, 1.0)
+    return Image.fromarray((lines * 255).astype(np.uint8)).convert("RGB")
 
 
 def _credit(row):
@@ -205,7 +208,7 @@ def _fal_pose(image_url):
     return url
 
 
-def _process(img, image_url, want_depth, want_pose, want_lineart):
+def _process(img, image_url, want_depth, want_pose, want_lineart, lineart_strength=2.5):
     """The three maps, as tensors. Runs only what something downstream reads.
 
     depth and lineart are local and fast enough that there is nothing to
@@ -226,7 +229,7 @@ def _process(img, image_url, want_depth, want_pose, want_lineart):
                 print(f"[FrameThrower] local depth failed: {exc}")
         if want_lineart:
             try:
-                out["lineart"] = _to_tensor(_local_lineart(img))
+                out["lineart"] = _to_tensor(_local_lineart(img, lineart_strength))
             except Exception as exc:  # noqa: BLE001
                 print(f"[FrameThrower] local lineart failed: {exc}")
 
@@ -362,6 +365,15 @@ class FrameThrowerReference:
                 # including the colour and more-like-this searches that a plain
                 # text query cannot reproduce. See syncAuto() in framethrower.js.
                 "auto": ("STRING", {"default": "", "multiline": False}),
+                # Deliberately NOT hidden behind the node body like the others:
+                # it is the one setting with no home in the grid UI, and a
+                # control you cannot reach is worse than one that costs a row.
+                "lineart_strength": ("FLOAT", {
+                    "default": 2.5, "min": 0.5, "max": 8.0, "step": 0.1,
+                    "tooltip": "How hard the lineart socket draws. 1.0 is faint, "
+                               "2.5 reads well on most frames, past 5 the texture "
+                               "fills in. Nothing else uses it.",
+                }),
             },
             "optional": {
                 "query_in": ("STRING", {"forceInput": True}),
@@ -418,7 +430,7 @@ class FrameThrowerReference:
     DESCRIPTION = "FT / FrameThrower reference frames. Search the film-still library and output the frame, its scene description, its credit line, and optional depth / DW pose / lineart."
 
     @classmethod
-    def IS_CHANGED(cls, query, mode, index, pinned, filters="", smart=True, auto="", query_in=None, image_in=None, prompt=None, unique_id=None):
+    def IS_CHANGED(cls, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength=2.5, query_in=None, image_in=None, prompt=None, unique_id=None):
         # Without this the node re-searches on every queue, and a search costs
         # credits. Hash the inputs so an unchanged node is a cache hit. The
         # connected outputs are part of the hash: wiring depth up has to
@@ -433,10 +445,10 @@ class FrameThrowerReference:
                 img = hashlib.sha256(image_in[0].cpu().numpy().tobytes()).hexdigest()[:16]
             except Exception:
                 img = "image"
-        blob = f"{query_in or query}|{mode}|{index}|{pinned}|{filters}|{smart}|{auto}|{wanted}|{img}"
+        blob = f"{query_in or query}|{mode}|{index}|{pinned}|{filters}|{smart}|{auto}|{lineart_strength}|{wanted}|{img}"
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-    def fetch(self, query, mode, index, pinned, filters="", smart=True, auto="", query_in=None, image_in=None, prompt=None, unique_id=None):
+    def fetch(self, query, mode, index, pinned, filters="", smart=True, auto="", lineart_strength=2.5, query_in=None, image_in=None, prompt=None, unique_id=None):
         row = None
 
         # A frame clicked in the grid wins over the query — you looked at it and
@@ -509,7 +521,8 @@ class FrameThrowerReference:
 
         # Run a processor only if something downstream is reading its socket.
         wanted = _connected_outputs(prompt, unique_id) or set()
-        maps = _process(pil, full, OUT_DEPTH in wanted, OUT_POSE in wanted, OUT_LINEART in wanted)
+        maps = _process(pil, full, OUT_DEPTH in wanted, OUT_POSE in wanted, OUT_LINEART in wanted,
+                        lineart_strength)
         return (image, description, credit, maps["depth"], maps["pose"], maps["lineart"])
 
 
