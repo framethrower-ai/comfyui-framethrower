@@ -36,14 +36,27 @@ MODES = ["hybrid", "description"]
 _BLANK = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
 
 _image_cache = {}
+_pil_cache = {}
 _CACHE_MAX = 64
 
 
-def _to_tensor(raw_bytes):
-    img = Image.open(io.BytesIO(raw_bytes))
-    img = ImageOps.exif_transpose(img).convert("RGB")
-    arr = np.array(img).astype(np.float32) / 255.0
+def _to_tensor(img):
+    arr = np.array(img.convert("RGB")).astype(np.float32) / 255.0
     return torch.from_numpy(arr)[None,]
+
+
+def _load_pil(url):
+    """The decoded frame. Kept as PIL because the local preprocessors want a
+    picture, not a tensor — and the picture is already here, so depth and
+    lineart cost no network at all."""
+    if url in _pil_cache:
+        return _pil_cache[url]
+    img = Image.open(io.BytesIO(ft_api.fetch_bytes(url)))
+    img = ImageOps.exif_transpose(img).convert("RGB")
+    if len(_pil_cache) >= _CACHE_MAX:
+        _pil_cache.pop(next(iter(_pil_cache)))
+    _pil_cache[url] = img
+    return img
 
 
 def _load_image(url):
@@ -51,11 +64,75 @@ def _load_image(url):
         return _BLANK
     if url in _image_cache:
         return _image_cache[url]
-    tensor = _to_tensor(ft_api.fetch_bytes(url))
+    tensor = _to_tensor(_load_pil(url))
     if len(_image_cache) >= _CACHE_MAX:
         _image_cache.pop(next(iter(_image_cache)))
     _image_cache[url] = tensor
     return tensor
+
+
+# ── local preprocessors ──────────────────────────────────────────────────────
+#
+# depth and lineart run on this machine. Measured on an M-series GPU: 65ms for
+# depth, against 58.9s on a cold fal model and 1.2s on a warm one, for output
+# that looks the same. Neither makes a network call — the frame is already
+# decoded here — so neither needs FAL_KEY and neither costs anything per image.
+#
+# Depth-Anything-V2-Small is a transformers `depth-estimation` pipeline, and
+# transformers ships with ComfyUI, so this adds no dependency. The weights
+# (~100MB) download once on first use and are cached by huggingface_hub.
+DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
+_depth_pipe = None
+
+
+def _torch_device():
+    """Whatever ComfyUI decided to use, so --cpu and --gpu-only are honoured
+    rather than second-guessed."""
+    try:
+        import comfy.model_management as mm
+
+        return mm.get_torch_device()
+    except Exception:  # noqa: BLE001 — running outside ComfyUI
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+
+
+def _local_depth(img):
+    global _depth_pipe
+    if _depth_pipe is None:
+        from transformers import pipeline
+
+        dev = _torch_device()
+        print(f"[FrameThrower] loading {DEPTH_MODEL} on {dev} — one-off, then cached on disk")
+        _depth_pipe = pipeline("depth-estimation", model=DEPTH_MODEL, device=dev)
+    return _depth_pipe(img)["depth"]
+
+
+def _local_lineart(img, spread=0.33):
+    """Edges, with the thresholds taken from the picture rather than fixed.
+
+    A filter, not a network: nothing to download and a few milliseconds to run.
+    White lines on black, the polarity a lineart ControlNet expects and the one
+    fal returned, so a graph does not invert when it switches over.
+
+    The thresholds come off the median because film stills are not uniformly
+    exposed — a night exterior sits around 18 and a daylight wide around 54 on
+    the frames measured, and any fixed pair of numbers blows out one and finds
+    nothing in the other. XDoG was tried first and failed exactly here: its
+    epsilon is absolute, so a threshold tuned on a lit frame returned a black
+    rectangle for a dark one.
+    """
+    import cv2
+
+    g = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+    g = cv2.GaussianBlur(g, (0, 0), 1.0)
+    v = float(np.median(g))
+    lo = int(max(0, (1.0 - spread) * v))
+    hi = int(min(255, (1.0 + spread) * v))
+    return Image.fromarray(cv2.Canny(g, lo, hi)).convert("RGB")
 
 
 def _credit(row):
@@ -69,13 +146,7 @@ def _credit(row):
     return out
 
 
-# depth-anything/v2 rather than imageutils/depth: the canvas measured it at
-# $0.00067 against $0.00261 per image for the same job.
-_FAL_ENDPOINTS = {
-    "depth": "fal-ai/image-preprocessors/depth-anything/v2",
-    "pose": "fal-ai/dwpose",
-    "lineart": "fal-ai/image-preprocessors/lineart",
-}
+_FAL_POSE = "fal-ai/dwpose"
 
 # A cold model on fal takes about a minute to come up; the same call against a
 # warm one is a second or two. 60s sat right on top of that cold start —
@@ -91,62 +162,81 @@ _map_cache = {}
 _MAP_CACHE_MAX = 128
 
 
-def _fal_process(image_url, want_depth, want_pose, want_lineart):
-    """depth / DW pose / lineart via fal, same three processors the canvas uses.
+def _fal_pose(image_url):
+    """DW pose, still on fal — there is no local path for it without a new
+    dependency. transformers has no pose pipeline, and onnxruntime / mediapipe /
+    ultralytics are none of them things ComfyUI already installs, so doing this
+    on-device would mean a package and a model download for one socket.
 
-    Runs only what was asked for, and runs them at the same time: they are three
-    independent HTTP calls, and doing them in sequence made a graph with all
-    three wired cost the sum of three cold starts rather than the longest one.
-    Measured 95.7s sequential against roughly the slowest single call now.
-
-    Returns a dict of url-or-None; a failure of one processor never takes the
-    others down with it.
+    Everything about the cold start applies: the model takes about a minute to
+    come up and about two seconds once warm, which is why the timeout is
+    generous. Cached per frame, because it is a charge per call.
     """
-    wanted = [k for k, w in (("depth", want_depth), ("pose", want_pose), ("lineart", want_lineart)) if w]
-    out = {"depth": None, "pose": None, "lineart": None}
-    if not wanted:
-        return out
+    cached = _map_cache.get((image_url, "pose"))
+    if cached:
+        return cached
 
     key = ft_api.config()["fal_key"]
     if not key:
-        print("[FrameThrower] depth/pose/lineart need FAL_KEY — skipping.")
-        return out
+        print("[FrameThrower] pose still runs on fal and needs FAL_KEY — skipping. "
+              "depth and lineart are local and need nothing.")
+        return None
 
     import urllib.request
 
-    def run(kind):
-        cached = _map_cache.get((image_url, kind))
-        if cached:
-            return kind, cached
-        endpoint = _FAL_ENDPOINTS[kind]
-        req = urllib.request.Request(
-            f"https://fal.run/{endpoint}",
-            data=json.dumps({"image_url": image_url}).encode("utf-8"),
-            headers={"Authorization": f"Key {key}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        started = time.time()
-        try:
-            with urllib.request.urlopen(req, timeout=_FAL_TIMEOUT) as res:
-                data = json.loads(res.read().decode("utf-8"))
-            url = (data.get("image") or {}).get("url")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[FrameThrower] {kind} ({endpoint}) failed after {time.time() - started:.0f}s: {exc}")
-            return kind, None
-        if url:
-            if len(_map_cache) >= _MAP_CACHE_MAX:
-                _map_cache.pop(next(iter(_map_cache)))
-            _map_cache[(image_url, kind)] = url
-        return kind, url
+    req = urllib.request.Request(
+        f"https://fal.run/{_FAL_POSE}",
+        data=json.dumps({"image_url": image_url}).encode("utf-8"),
+        headers={"Authorization": f"Key {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    started = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=_FAL_TIMEOUT) as res:
+            data = json.loads(res.read().decode("utf-8"))
+        url = (data.get("image") or {}).get("url")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[FrameThrower] pose ({_FAL_POSE}) failed after {time.time() - started:.0f}s: {exc}")
+        return None
+    if url:
+        if len(_map_cache) >= _MAP_CACHE_MAX:
+            _map_cache.pop(next(iter(_map_cache)))
+        _map_cache[(image_url, "pose")] = url
+    return url
 
-    if len(wanted) == 1:
-        kind, url = run(wanted[0])
-        out[kind] = url
-        return out
 
-    with ThreadPoolExecutor(max_workers=len(wanted)) as pool:
-        for kind, url in pool.map(run, wanted):
-            out[kind] = url
+def _process(img, image_url, want_depth, want_pose, want_lineart):
+    """The three maps, as tensors. Runs only what something downstream reads.
+
+    depth and lineart are local and fast enough that there is nothing to
+    parallelise; pose is a network call and goes first so it overlaps them.
+    """
+    out = {"depth": _BLANK, "pose": _BLANK, "lineart": _BLANK}
+    pose_job = None
+    pool = None
+    try:
+        if want_pose:
+            pool = ThreadPoolExecutor(max_workers=1)
+            pose_job = pool.submit(_fal_pose, image_url)
+
+        if want_depth:
+            try:
+                out["depth"] = _to_tensor(_local_depth(img))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[FrameThrower] local depth failed: {exc}")
+        if want_lineart:
+            try:
+                out["lineart"] = _to_tensor(_local_lineart(img))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[FrameThrower] local lineart failed: {exc}")
+
+        if pose_job is not None:
+            url = pose_job.result()
+            if url:
+                out["pose"] = _load_image(url)
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
     return out
 
 
@@ -408,6 +498,7 @@ class FrameThrowerReference:
             row = results[index]
 
         full = row.get("fullSrc") or row.get("src")
+        pil = _load_pil(full)
         image = _load_image(full)
         # NOT `prompt` — that name is the hidden PROMPT graph, and rebinding it
         # here left _connected_outputs reading a description string. It caught
@@ -418,15 +509,8 @@ class FrameThrowerReference:
 
         # Run a processor only if something downstream is reading its socket.
         wanted = _connected_outputs(prompt, unique_id) or set()
-        maps = _fal_process(full, OUT_DEPTH in wanted, OUT_POSE in wanted, OUT_LINEART in wanted)
-        return (
-            image,
-            description,
-            credit,
-            _load_image(maps["depth"]) if maps["depth"] else _BLANK,
-            _load_image(maps["pose"]) if maps["pose"] else _BLANK,
-            _load_image(maps["lineart"]) if maps["lineart"] else _BLANK,
-        )
+        maps = _process(pil, full, OUT_DEPTH in wanted, OUT_POSE in wanted, OUT_LINEART in wanted)
+        return (image, description, credit, maps["depth"], maps["pose"], maps["lineart"])
 
 
 NODE_CLASS_MAPPINGS = {"FrameThrowerReference": FrameThrowerReference}

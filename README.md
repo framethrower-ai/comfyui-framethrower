@@ -54,9 +54,11 @@ Dragging a frame out of the grid onto the canvas makes a plain `LoadImage` point
 
 A Primitive string node looks like the right target and is not: it *makes* text rather than showing it, so its `value` is a widget with no input socket and the wire cannot be made at all. `workflows/reference-basic.json` has all of this connected already — load it rather than rebuilding it.
 
-**The last three run only if you wire them.** There is no toggle: the node reads the executing graph and runs a processor when something downstream is reading that socket. Each one is a real charge per image (roughly $0.0007 for depth), so the wire you can see is the only thing that spends money — no hidden switch that leaves a connected socket black.
+**The last three run only if you wire them.** There is no toggle: the node reads the executing graph and runs a processor when something downstream is reading that socket. Unwired, a socket outputs a single black pixel rather than nothing — Comfy has no null on an `IMAGE` socket, and one black pixel fails loudly instead of silently passing the wrong picture downstream.
 
-They need a `FAL_KEY`, in the environment or in the config file. Without one the node prints why and carries on; text search never needs it. Unwired, a socket outputs a single black pixel rather than nothing: Comfy has no null on an `IMAGE` socket, and one black pixel fails loudly instead of silently passing the wrong picture downstream.
+**`depth` and `lineart` run on your machine.** No key, no network call, nothing per image. Depth is Depth-Anything-V2-Small through the `transformers` pipeline that already ships with ComfyUI, on whichever device ComfyUI chose; the weights (~100MB) download once on first use. Lineart is an edge filter with thresholds taken from the frame's own median, so it holds up across a night exterior and a daylight wide alike. Measured on an M-series GPU: **65ms for depth, against 58.9s on a cold fal model** for output that looks the same.
+
+**`pose` still calls fal** and still needs a `FAL_KEY`, because there is no local path for it that does not drag in a new dependency — `transformers` has no pose pipeline, and onnxruntime, mediapipe and ultralytics are none of them things ComfyUI already installs. Without a key the node says so and carries on. It is cached per frame, since it is a real charge per call.
 
 `image_in` (search by picture rather than words) also needs `FAL_KEY`, plus `pip install fal-client` — FrameThrower fetches the picture by URL, so it has to be uploaded somewhere first.
 
