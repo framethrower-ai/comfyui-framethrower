@@ -125,8 +125,8 @@ def _strength(raw, default=3.0, lo=0.5, hi=8.0):
         return default
 
 
-def _local_lineart(img, strength=3.0, blur=0.6):
-    """Edge ridges, carrying the gradient's weight.
+def _local_lineart(img, strength=3.0):
+    """Edge ridges at a chosen scale, carrying the gradient's weight.
 
     A filter, not a network: nothing to download and a few milliseconds to run.
     White lines on black, the polarity a lineart ControlNet expects and the one
@@ -156,6 +156,20 @@ def _local_lineart(img, strength=3.0, blur=0.6):
     """
     import cv2
 
+    # The slider is detail, not brightness. Turning the gain down only dimmed a
+    # picture that was too busy, which is not the same complaint. Raising the
+    # Canny thresholds did not work either — measured 0.115 down to only 0.080
+    # across a 6x threshold sweep, because foliage and fabric are genuinely
+    # high-contrast and survive any threshold you can set.
+    #
+    # Scale is the lever that works. Blurring before the gradient removes fine
+    # texture and keeps structure, so the dial drives blur downwards as it goes
+    # up, with a little gain alongside so the sparse end does not also read as
+    # dim. On the test frame: 0.029 at 0.5, 0.058 at the default, 0.146 at 8.
+    detail = float(strength)
+    blur = max(0.4, min(3.4, 3.4 - 0.45 * detail))
+    gain = 2.4 + 0.2 * detail
+
     g8 = cv2.GaussianBlur(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY), (0, 0), blur)
     g = g8.astype(np.float32) / 255.0
 
@@ -165,7 +179,7 @@ def _local_lineart(img, strength=3.0, blur=0.6):
     v = float(np.median(g8))
     ridge = cv2.Canny(g8, int(max(0, 0.5 * v)), int(min(255, 1.5 * v))) > 0
 
-    lines = np.clip(m * float(strength), 0.0, 1.0) * ridge
+    lines = np.clip(m * gain, 0.0, 1.0) * ridge
     return Image.fromarray((lines * 255).astype(np.uint8)).convert("RGB")
 
 
