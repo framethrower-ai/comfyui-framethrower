@@ -1,149 +1,76 @@
 {
-  "last_node_id": 3,
-  "last_link_id": 2,
+  "last_node_id": 4,
+  "last_link_id": 3,
   "nodes": [
     {
       "id": 1,
       "type": "FrameThrowerReference",
-      "pos": [
-        80,
-        120
-      ],
-      "size": [
-        360,
-        560
-      ],
+      "pos": [80, 120],
+      "size": [360, 560],
       "flags": {},
       "order": 0,
       "mode": 0,
       "inputs": [
-        {
-          "name": "query_in",
-          "type": "STRING",
-          "link": null,
-          "shape": 7
-        }
+        { "name": "query_in", "type": "STRING", "link": null, "shape": 7 },
+        { "name": "image_in", "type": "IMAGE", "link": null, "shape": 7 }
       ],
       "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            1
-          ],
-          "slot_index": 0
-        },
-        {
-          "name": "prompt (text)",
-          "type": "STRING",
-          "links": [
-            2
-          ],
-          "slot_index": 1
-        },
-        {
-          "name": "credit (text)",
-          "type": "STRING",
-          "links": null
-        },
-        {
-          "name": "depth",
-          "type": "IMAGE",
-          "links": null
-        },
-        {
-          "name": "pose",
-          "type": "IMAGE",
-          "links": null
-        },
-        {
-          "name": "lineart",
-          "type": "IMAGE",
-          "links": null
-        }
+        { "name": "image", "type": "IMAGE", "links": [1], "slot_index": 0 },
+        { "name": "prompt (text)", "type": "STRING", "links": [2], "slot_index": 1 },
+        { "name": "credit (text)", "type": "STRING", "links": [3], "slot_index": 2 },
+        { "name": "depth", "type": "IMAGE", "links": null },
+        { "name": "pose", "type": "IMAGE", "links": null },
+        { "name": "lineart", "type": "IMAGE", "links": null }
       ],
-      "properties": {
-        "Node name for S&R": "FrameThrowerReference"
-      },
-      "widgets_values": [
-        "neon rain at night",
-        "hybrid",
-        0,
-        ""
-      ]
+      "properties": { "Node name for S&R": "FrameThrowerReference" },
+      "widgets_values": ["neon rain at night", "hybrid", 0, "", "", true]
     },
     {
       "id": 2,
       "type": "PreviewImage",
-      "pos": [
-        500,
-        120
-      ],
-      "size": [
-        420,
-        300
-      ],
+      "pos": [500, 120],
+      "size": [420, 300],
       "flags": {},
       "order": 1,
       "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 1
-        }
-      ],
+      "inputs": [{ "name": "images", "type": "IMAGE", "link": 1 }],
       "outputs": [],
-      "properties": {
-        "Node name for S&R": "PreviewImage"
-      },
+      "properties": { "Node name for S&R": "PreviewImage" },
       "widgets_values": []
     },
     {
       "id": 3,
       "type": "PreviewAny",
-      "pos": [
-        500,
-        460
-      ],
-      "size": [
-        420,
-        200
-      ],
+      "pos": [500, 460],
+      "size": [420, 140],
       "flags": {},
       "order": 2,
       "mode": 0,
-      "inputs": [
-        {
-          "name": "source",
-          "type": "*",
-          "link": 2
-        }
-      ],
+      "inputs": [{ "name": "source", "type": "*", "link": 2 }],
       "outputs": [],
-      "properties": {
-        "Node name for S&R": "PreviewAny"
-      },
+      "properties": { "Node name for S&R": "PreviewAny" },
+      "title": "prompt (text) — the scene description",
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "PreviewAny",
+      "pos": [500, 640],
+      "size": [420, 100],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [{ "name": "source", "type": "*", "link": 3 }],
+      "outputs": [],
+      "properties": { "Node name for S&R": "PreviewAny" },
+      "title": "credit (text) — title, year, director",
       "widgets_values": []
     }
   ],
   "links": [
-    [
-      1,
-      1,
-      0,
-      2,
-      0,
-      "IMAGE"
-    ],
-    [
-      2,
-      1,
-      1,
-      3,
-      0,
-      "STRING"
-    ]
+    [1, 1, 0, 2, 0, "IMAGE"],
+    [2, 1, 1, 3, 0, "STRING"],
+    [3, 1, 2, 4, 0, "STRING"]
   ],
   "groups": [],
   "config": {},
