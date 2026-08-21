@@ -144,6 +144,28 @@ const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart", "auto", 
 let CANON = null;
 
 /**
+ * The definition, resolved late.
+ *
+ * It used to be captured only in beforeRegisterNodeDef, which is a race: if a
+ * graph deserialises before that runs, every reconcile below hits a null and
+ * silently does nothing — the exact failure that made this look like it was
+ * not running at all. Falling back to the registered type means the answer is
+ * available whenever it is first needed.
+ */
+function canon() {
+    if (CANON) return CANON;
+    const def = LiteGraph.registered_node_types?.[NODE]?.nodeData
+        || app.graph?.extra?.nodeDefs?.[NODE];
+    if (!def?.output) return null;
+    CANON = {
+        types: Array.from(def.output),
+        names: Array.from(def.output_name || def.output),
+        inputs: Object.keys({ ...(def.input?.required || {}), ...(def.input?.optional || {}) }),
+    };
+    return CANON;
+}
+
+/**
  * Bring a node loaded from a workflow back in line with the current definition.
  *
  * A workflow stores each socket's name and type beside its links, and
@@ -163,24 +185,25 @@ let CANON = null;
  * Idempotent, and safe on a node that has never been touched.
  */
 function reconcileOutputs(node) {
-    if (!CANON || !node.outputs?.length) return;
+    const C = canon();
+    if (!C || !node.outputs?.length) return;
     const graph = node.graph || app.graph;
     const saved = node.outputs.map((o) => ({
         name: o.name, type: o.type, links: (o.links || []).slice(),
     }));
 
-    while (node.outputs.length > CANON.names.length) node.outputs.pop();
-    CANON.names.forEach((name, i) => {
-        if (!node.outputs[i]) node.outputs[i] = { name, type: CANON.types[i], links: [] };
+    while (node.outputs.length > C.names.length) node.outputs.pop();
+    C.names.forEach((name, i) => {
+        if (!node.outputs[i]) node.outputs[i] = { name, type: C.types[i], links: [] };
         node.outputs[i].name = name;
-        node.outputs[i].type = CANON.types[i];
+        node.outputs[i].type = C.types[i];
         node.outputs[i].links = [];
         node.outputs[i].slot_index = i;
     });
 
     for (const old of saved) {
-        const i = CANON.names.indexOf(old.name);
-        const compatible = i >= 0 && CANON.types[i] === old.type;
+        const i = C.names.indexOf(old.name);
+        const compatible = i >= 0 && C.types[i] === old.type;
         for (const id of old.links) {
             if (compatible) {
                 const link = graph?.links?.[id];
@@ -199,10 +222,11 @@ function reconcileOutputs(node) {
  * next load — which a list would have done, silently.
  */
 function pruneDeadInputs(node) {
-    if (!CANON) return;
+    const C = canon();
+    if (!C) return;
     const graph = node.graph || app.graph;
     for (let i = (node.inputs || []).length - 1; i >= 0; i--) {
-        if (CANON.inputs.includes(node.inputs[i].name)) continue;
+        if (C.inputs.includes(node.inputs[i].name)) continue;
         const link = node.inputs[i].link;
         if (link != null && graph?.removeLink) graph.removeLink(link);
         node.removeInput(i);
@@ -1151,7 +1175,8 @@ class ReferenceBody {
      *  rule the processors themselves follow: the wire states the intent.
      */
     lineartWired() {
-        const i = CANON ? CANON.names.indexOf("lineart") : -1;
+        const C = canon();
+        const i = C ? C.names.indexOf("lineart") : -1;
         return i >= 0 && (this.node.outputs?.[i]?.links || []).length > 0;
     }
 
