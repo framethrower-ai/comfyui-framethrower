@@ -137,85 +137,76 @@ function installDropHandler() {
 
 /** Every native widget, so they can all be hidden in one pass. */
 const NATIVE = ["query", "mode", "index", "pinned", "filters", "smart", "auto", "lineart_strength"];
-// Output slot index of `lineart`, mirrored from RETURN_NAMES in nodes.py.
-const OUT_LINEART = 3;
+// What Comfy declares for this node right now, captured at registration.
+// Everything below reconciles a saved graph against this instead of a
+// hardcoded table, so a future rename, reorder or added socket needs no new
+// migration written by hand.
+let CANON = null;
 
-// Outputs were reordered in 0.9.0 to put the four pictures first and the two
-// text sockets last. Comfy stores a link by slot *index*, so a graph saved
-// against the old layout would come back with prompt feeding a depth
-// ControlNet — silently, because two of the moved slots are the same type.
-// Old order was image, prompt, credit, depth, pose, lineart.
-const OUT_ORDER_VERSION = 2;
-const OUT_REMAP = { 0: 0, 1: 4, 2: 5, 3: 1, 4: 2, 5: 3 };
+/**
+ * Bring a node loaded from a workflow back in line with the current definition.
+ *
+ * A workflow stores each socket's name and type beside its links, and
+ * LiteGraph restores what was saved. So changing the node's shape silently
+ * breaks graphs already on a canvas. It has happened twice: 0.7.0 removed
+ * image_in and the dead socket kept appearing, and 0.9.0 moved the four IMAGE
+ * outputs ahead of the two STRING ones, leaving slot 1 still called
+ * "prompt (text)" and typed STRING while Python had begun sending depth there
+ * — an IMAGE tensor printed into a text preview, and a red "incompatible
+ * types" on the depth wire.
+ *
+ * Links are re-attached by socket NAME, not by position. That is the point:
+ * names survive reordering, so this keeps working for changes that have not
+ * happened yet. A socket whose name is gone, or whose type no longer matches,
+ * has its links cut — that wiring cannot mean what it used to.
+ *
+ * Idempotent, and safe on a node that has never been touched.
+ */
+function reconcileOutputs(node) {
+    if (!CANON || !node.outputs?.length) return;
+    const graph = node.graph || app.graph;
+    const saved = node.outputs.map((o) => ({
+        name: o.name, type: o.type, links: (o.links || []).slice(),
+    }));
 
-// Inputs Comfy no longer defines. Removing an input from INPUT_TYPES does not
-// remove it from a node already on a canvas — LiteGraph rebuilds the node from
-// what the workflow saved, so a socket for a deleted input sits there forever,
-// wireable and doing nothing. image_in went in 0.7.0 and kept showing up.
-const LIVE_INPUTS = ["query_in"];
+    while (node.outputs.length > CANON.names.length) node.outputs.pop();
+    CANON.names.forEach((name, i) => {
+        if (!node.outputs[i]) node.outputs[i] = { name, type: CANON.types[i], links: [] };
+        node.outputs[i].name = name;
+        node.outputs[i].type = CANON.types[i];
+        node.outputs[i].links = [];
+        node.outputs[i].slot_index = i;
+    });
 
+    for (const old of saved) {
+        const i = CANON.names.indexOf(old.name);
+        const compatible = i >= 0 && CANON.types[i] === old.type;
+        for (const id of old.links) {
+            if (compatible) {
+                const link = graph?.links?.[id];
+                if (link) link.origin_slot = i;
+                node.outputs[i].links.push(id);
+            } else if (graph?.removeLink) {
+                graph.removeLink(id);
+            }
+        }
+    }
+}
+
+/**
+ * Drop inputs Comfy no longer defines. Derived from the definition rather than
+ * a hardcoded list, so adding an input later does not get it deleted on the
+ * next load — which a list would have done, silently.
+ */
 function pruneDeadInputs(node) {
+    if (!CANON) return;
     const graph = node.graph || app.graph;
     for (let i = (node.inputs || []).length - 1; i >= 0; i--) {
-        const input = node.inputs[i];
-        if (LIVE_INPUTS.includes(input.name)) continue;
-        if (input.link != null && graph?.removeLink) graph.removeLink(input.link);
+        if (CANON.inputs.includes(node.inputs[i].name)) continue;
+        const link = node.inputs[i].link;
+        if (link != null && graph?.removeLink) graph.removeLink(link);
         node.removeInput(i);
     }
-}
-
-// The socket definitions Comfy currently declares, captured at registration.
-// A workflow stores each output's name and type alongside its links, and
-// LiteGraph restores what was saved — so a node placed before the sockets were
-// reordered comes back still calling slot 1 "prompt (text)" and typing it
-// STRING, while Python now sends depth there. The visible result is an IMAGE
-// tensor printed into a text preview and a red "incompatible types" on the
-// depth and pose wires.
-//
-// Remapping the links was not enough. The slot definitions have to be restated
-// too, and idempotently, because a node may have been migrated by the previous
-// version which fixed only half of it.
-let CANON_OUTPUTS = null;
-
-function normaliseOutputs(node) {
-    if (!CANON_OUTPUTS || !node.outputs) return;
-    node.outputs.forEach((o, i) => {
-        const type = CANON_OUTPUTS.types[i];
-        const name = CANON_OUTPUTS.names[i];
-        if (!type) return;
-        // A link whose endpoints now disagree on type is the stale wiring this
-        // is here to clean up; drop it rather than leave a red edge behind.
-        if (o.type !== type) {
-            const graph = node.graph || app.graph;
-            for (const id of (o.links || []).slice()) {
-                if (graph?.removeLink) graph.removeLink(id);
-            }
-            o.links = [];
-        }
-        o.type = type;
-        o.name = name;
-    });
-}
-
-function migrateOutputOrder(node) {
-    if (node.properties?.ftOutputs === OUT_ORDER_VERSION) return;
-    node.properties = node.properties || {};
-    const graph = node.graph || app.graph;
-    const outs = node.outputs || [];
-    if (outs.length === 6 && graph) {
-        const before = outs.map((o) => (o.links || []).slice());
-        outs.forEach((o) => { o.links = []; });
-        before.forEach((links, oldSlot) => {
-            const slot = OUT_REMAP[oldSlot];
-            if (slot == null || !outs[slot]) return;
-            for (const id of links) {
-                const link = graph.links?.[id];
-                if (link) link.origin_slot = slot;
-                outs[slot].links.push(id);
-            }
-        });
-    }
-    node.properties.ftOutputs = OUT_ORDER_VERSION;
 }
 
 // The node always searches hybrid. `description` ranks on the written
@@ -1160,7 +1151,8 @@ class ReferenceBody {
      *  rule the processors themselves follow: the wire states the intent.
      */
     lineartWired() {
-        return (this.node.outputs?.[OUT_LINEART]?.links || []).length > 0;
+        const i = CANON ? CANON.names.indexOf("lineart") : -1;
+        return i >= 0 && (this.node.outputs?.[i]?.links || []).length > 0;
     }
 
     syncAuto() {
@@ -1406,9 +1398,13 @@ app.registerExtension({
     name: "framethrower.reference",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== NODE) return;
-        CANON_OUTPUTS = {
+        CANON = {
             types: Array.from(nodeData.output || []),
             names: Array.from(nodeData.output_name || nodeData.output || []),
+            inputs: Object.keys({
+                ...(nodeData.input?.required || {}),
+                ...(nodeData.input?.optional || {}),
+            }),
         };
         injectCss();
 
@@ -1443,9 +1439,7 @@ app.registerExtension({
             installDropHandler();
             pruneDeadInputs(this);
             // Born in the new order, so the migration below never touches it.
-            this.properties = this.properties || {};
-            this.properties.ftOutputs = OUT_ORDER_VERSION;
-            normaliseOutputs(this);
+            reconcileOutputs(this);
             this.size = [320, 400];
             this.serialize_widgets = true;
         };
@@ -1455,8 +1449,7 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             configure?.apply(this, arguments);
             pruneDeadInputs(this);
-            migrateOutputOrder(this);
-            normaliseOutputs(this);
+            reconcileOutputs(this);
             if (!this.ftUI) return;
             const raw = this.widgets?.find((w) => w.name === "pinned")?.value;
             if (raw) {
