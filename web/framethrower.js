@@ -164,6 +164,39 @@ function pruneDeadInputs(node) {
     }
 }
 
+// The socket definitions Comfy currently declares, captured at registration.
+// A workflow stores each output's name and type alongside its links, and
+// LiteGraph restores what was saved — so a node placed before the sockets were
+// reordered comes back still calling slot 1 "prompt (text)" and typing it
+// STRING, while Python now sends depth there. The visible result is an IMAGE
+// tensor printed into a text preview and a red "incompatible types" on the
+// depth and pose wires.
+//
+// Remapping the links was not enough. The slot definitions have to be restated
+// too, and idempotently, because a node may have been migrated by the previous
+// version which fixed only half of it.
+let CANON_OUTPUTS = null;
+
+function normaliseOutputs(node) {
+    if (!CANON_OUTPUTS || !node.outputs) return;
+    node.outputs.forEach((o, i) => {
+        const type = CANON_OUTPUTS.types[i];
+        const name = CANON_OUTPUTS.names[i];
+        if (!type) return;
+        // A link whose endpoints now disagree on type is the stale wiring this
+        // is here to clean up; drop it rather than leave a red edge behind.
+        if (o.type !== type) {
+            const graph = node.graph || app.graph;
+            for (const id of (o.links || []).slice()) {
+                if (graph?.removeLink) graph.removeLink(id);
+            }
+            o.links = [];
+        }
+        o.type = type;
+        o.name = name;
+    });
+}
+
 function migrateOutputOrder(node) {
     if (node.properties?.ftOutputs === OUT_ORDER_VERSION) return;
     node.properties = node.properties || {};
@@ -1373,6 +1406,10 @@ app.registerExtension({
     name: "framethrower.reference",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== NODE) return;
+        CANON_OUTPUTS = {
+            types: Array.from(nodeData.output || []),
+            names: Array.from(nodeData.output_name || nodeData.output || []),
+        };
         injectCss();
 
         const created = nodeType.prototype.onNodeCreated;
@@ -1408,6 +1445,7 @@ app.registerExtension({
             // Born in the new order, so the migration below never touches it.
             this.properties = this.properties || {};
             this.properties.ftOutputs = OUT_ORDER_VERSION;
+            normaliseOutputs(this);
             this.size = [320, 400];
             this.serialize_widgets = true;
         };
@@ -1418,6 +1456,7 @@ app.registerExtension({
             configure?.apply(this, arguments);
             pruneDeadInputs(this);
             migrateOutputOrder(this);
+            normaliseOutputs(this);
             if (!this.ftUI) return;
             const raw = this.widgets?.find((w) => w.name === "pinned")?.value;
             if (raw) {
